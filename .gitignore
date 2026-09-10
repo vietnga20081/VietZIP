@@ -15,6 +15,7 @@ dist/
 *.spec.bak
 *.manifest
 payload.zip
+*.zip
 
 # Testing & Caches
 .pytest_cache/
