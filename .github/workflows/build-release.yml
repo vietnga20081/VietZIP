@@ -1,0 +1,75 @@
+name: Build & Release VietZIP
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Windows Executables
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller pytest
+
+      - name: Run automated tests
+        run: |
+          pytest -v
+
+      - name: Build VietZIP (Portable onedir)
+        run: |
+          python -m PyInstaller VietZIP.spec --noconfirm --clean
+
+      - name: Archive Portable ZIP
+        run: |
+          Compress-Archive -Path "dist/VietZIP/*" -DestinationPath "VietZIP_Portable.zip"
+
+      - name: Create payload for Setup Wizard
+        run: |
+          python -c "import shutil; shutil.make_archive('payload', 'zip', 'dist/VietZIP')"
+
+      - name: Build VietZIP Setup Wizard (VietZIP_Setup.exe)
+        run: |
+          python -m PyInstaller VietZIP_Setup.spec --noconfirm --clean
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            dist/VietZIP_Setup.exe
+            VietZIP_Portable.zip
+          name: VietZIP ${{ github.ref_name }}
+          body: |
+            ## 🎉 VietZIP ${{ github.ref_name }} — Trình nén & giải nén tập tin hiện đại cho người Việt
+
+            ### 📦 Các bản tải về:
+            - **Trình cài đặt tự động (Khuyên dùng):** `VietZIP_Setup.exe` (Tự động tạo shortcut Desktop, Start Menu, tích hợp menu chuột phải).
+            - **Bản Portable (Chạy ngay không cần cài đặt):** `VietZIP_Portable.zip`.
+
+            ### ✨ Tính năng nổi bật:
+            - Tích hợp sâu vào Windows Explorer Context Menu (Nén / Giải nén chỉ với 1 cú click chuột).
+            - Cơ chế Single-Instance Mutex chống mở nhiều cửa sổ khi chọn nhiều file.
+            - Hỗ trợ mã hóa mật khẩu AES-256 hiện đại.
+            - Bảo vệ chống Zip Slip traversal và cảnh báo Zip Bomb.
+            - Giao diện Tiếng Việt hiện đại, hỗ trợ Dark / Light mode.
+            - 100% Miễn phí & Mã nguồn mở.
+          draft: false
+          prerelease: false
