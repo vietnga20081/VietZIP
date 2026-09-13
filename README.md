@@ -124,14 +124,16 @@ pytest -v
 
 Dự án đã có sẵn script đóng gói tự động cho Windows:
 
-1. Chạy file `build_windows.bat`:
+1. Chạy file `build_windows.bat` (Local build):
    ```cmd
    build_windows.bat
    ```
 2. File thực thi độc lập sẽ được tạo tại:
    ```text
    dist/VietZIP/VietZIP.exe
+   dist/VietZIP_Setup.exe
    ```
+3. Xem hướng dẫn tự động đóng gói & phát hành trên GitHub Actions tại: **[BUILD_AND_RELEASE.md](BUILD_AND_RELEASE.md)**.
 
 ---
 
@@ -177,10 +179,11 @@ VietZIP được phát triển và duy trì bởi **Team VietZIP** với mục t
 
 Nếu VietZIP giúp ích cho công việc và học tập hàng ngày của bạn, hãy tiếp thêm động lực cho Team VietZIP bằng một tách cà phê nhé! 💖
 
-- **Ngân hàng:** MB Bank (Ngân hàng Quân Đội)
-- **Số tài khoản:** `0988888888` (hoặc quét mã QR trên website `vietzip.vcp.io.vn`)
-- **Chủ tài khoản:** TEAM VIETZIP
+- **Ngân hàng:** ACB
+- **Số tài khoản:** `19675051`
+- **Chủ tài khoản:** DAO QUOC VIET
 - **Nội dung:** `VietZIP Donate`
+- **Momo:** `0816086555`
 
 ---
 

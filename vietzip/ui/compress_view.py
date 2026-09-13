@@ -220,12 +220,12 @@ class CompressView(ctk.CTkFrame):
             self.refresh_list_ui()
 
     def _add_files(self):
-        files = filedialog.askopenfilenames(title="Chọn file cần nén")
+        files = filedialog.askopenfilenames(title="Chọn file cần nén", parent=self.winfo_toplevel())
         if files:
             self.add_paths(list(files))
 
     def _add_folder(self):
-        folder = filedialog.askdirectory(title="Chọn thư mục cần nén")
+        folder = filedialog.askdirectory(title="Chọn thư mục cần nén", parent=self.winfo_toplevel())
         if folder:
             self.add_paths([folder])
 
@@ -324,7 +324,7 @@ class CompressView(ctk.CTkFrame):
     def _on_click_compress(self):
         if not self.compress_items:
             from tkinter import messagebox
-            messagebox.showwarning("VietZIP", "Vui lòng thêm ít nhất một file hoặc thư mục để nén!")
+            messagebox.showwarning("VietZIP", "Vui lòng thêm ít nhất một file hoặc thư mục để nén!", parent=self.winfo_toplevel())
             return
 
         # Gợi ý tên file thông minh
@@ -343,6 +343,7 @@ class CompressView(ctk.CTkFrame):
             initialdir=initial_dir,
             initialfile=suggested_name,
             filetypes=[("ZIP Archive", "*.zip")],
+            parent=self.winfo_toplevel(),
         )
         if not output_path:
             return

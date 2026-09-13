@@ -24,6 +24,72 @@ from vietzip.ui.theme import (
 from vietzip.utils.file_utils import open_file, open_in_explorer
 
 
+def bring_to_front(window: ctk.CTkToplevel, master=None):
+    """Đảm bảo cửa sổ toplevel luôn nổi lên phía trước master, không bị ẩn và nhận focus."""
+    if master is not None and hasattr(master, "winfo_exists"):
+        try:
+            if master.winfo_exists():
+                window.transient(master)
+        except Exception:
+            pass
+
+    def _apply():
+        try:
+            if window.winfo_exists():
+                window.deiconify()
+                window.lift()
+                window.attributes("-topmost", True)
+                window.focus_force()
+                window.after(120, _release)
+        except Exception:
+            pass
+
+    def _release():
+        try:
+            if window.winfo_exists():
+                window.attributes("-topmost", False)
+                window.lift()
+                window.focus_force()
+        except Exception:
+            pass
+
+    _apply()
+    try:
+        window.after(60, _apply)
+    except Exception:
+        pass
+
+
+def setup_toplevel_window(
+    window: ctk.CTkToplevel,
+    master=None,
+    width: int = 540,
+    height: int = 500,
+):
+    """Cấu hình cửa sổ toplevel: căn giữa theo master (hoặc màn hình), gán transient và đưa lên trước."""
+    try:
+        if master is not None and hasattr(master, "winfo_exists") and master.winfo_exists():
+            window.transient(master)
+            master.update_idletasks()
+            mx = master.winfo_x()
+            my = master.winfo_y()
+            mw = master.winfo_width()
+            mh = master.winfo_height()
+            x = max(0, mx + (mw - width) // 2)
+            y = max(0, my + (mh - height) // 2)
+        else:
+            sw = window.winfo_screenwidth()
+            sh = window.winfo_screenheight()
+            x = max(0, (sw - width) // 2)
+            y = max(0, (sh - height) // 2)
+
+        window.geometry(f"{width}x{height}+{x}+{y}")
+    except Exception:
+        window.geometry(f"{width}x{height}")
+
+    bring_to_front(window, master)
+
+
 class ToastNotification(ctk.CTkFrame):
     """Toast popup thông báo kết quả thao tác gọn gàng, không làm gián đoạn người dùng."""
 
@@ -128,8 +194,8 @@ class OverwriteDialog(ctk.CTkToplevel):
     def __init__(self, master, file_path: Path):
         super().__init__(master)
         self.title("File đã tồn tại")
-        self.geometry("450x260")
         self.resizable(False, False)
+        setup_toplevel_window(self, master, 450, 260)
         self.attributes("-topmost", True)
 
         self.selected_policy = OverwritePolicy.AUTO_RENAME

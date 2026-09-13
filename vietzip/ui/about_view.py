@@ -24,15 +24,18 @@ from vietzip.ui.theme import (
     FONT_SMALL,
     FONT_MONO,
 )
+from vietzip.ui.widgets import setup_toplevel_window
 from vietzip.utils.file_utils import get_asset_path
 
 
 WEBSITE_URL = "https://vietzip.vcp.io.vn"
 GITHUB_URL = "https://github.com/vietnga20081/VietZIP"
 DONATE_INFO = """Ủng hộ tác giả Team VietZIP:
-- Ngân hàng: MB Bank (Ngân hàng Quân Đội)
-- Số tài khoản: 0988888888 (hoặc quét mã QR trên website)
+- Ngân hàng: ACB
+- Số tài khoản: 19675051
+- Chủ tài khoản: DAO QUOC VIET
 - Nội dung: VietZIP Donate
+- Momo: 0816086555
 - Website: https://vietzip.vcp.io.vn"""
 
 
@@ -42,9 +45,9 @@ class AboutWindow(ctk.CTkToplevel):
     def __init__(self, master):
         super().__init__(master)
         self.title("Giới thiệu — VietZIP")
-        self.geometry("560x540")
         self.minsize(500, 480)
         self.resizable(False, False)
+        setup_toplevel_window(self, master, 560, 540)
 
         # Set window icon
         ico_path = get_asset_path("vietzip.ico")
@@ -209,9 +212,11 @@ class AboutWindow(ctk.CTkToplevel):
         donate_desc = (
             "Mỗi tách cà phê từ bạn là nguồn động lực quý báu giúp Team VietZIP "
             "duy trì hạ tầng máy chủ và tiếp tục hoàn thiện các tính năng mới!\n\n"
-            "• Ngân hàng: MB Bank (Ngân hàng Quân Đội)\n"
-            "• Số tài khoản / Momo: 0988888888 (Quét QR tại vietzip.vcp.io.vn)\n"
-            "• Nội dung: VietZIP Donate"
+            "• Ngân hàng: ACB\n"
+            "• Số tài khoản: 19675051\n"
+            "• Chủ tài khoản: DAO QUOC VIET\n"
+            "• Nội dung: VietZIP Donate\n"
+            "• Momo: 0816086555"
         )
         ctk.CTkLabel(
             card_donate,
@@ -249,4 +254,5 @@ class AboutWindow(ctk.CTkToplevel):
             "Đã sao chép! — VietZIP",
             "Đã sao chép thông tin Donate vào bộ nhớ tạm (Clipboard).\n\n"
             "Cảm ơn bạn rất nhiều vì đã đồng hành và ủng hộ Team VietZIP! 💖",
+            parent=self,
         )

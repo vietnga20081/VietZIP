@@ -62,7 +62,7 @@ from vietzip.ui.theme import (
     MASCOT_WORKING,
     init_theme,
 )
-from vietzip.ui.widgets import OverwriteDialog, ToastNotification
+from vietzip.ui.widgets import OverwriteDialog, ToastNotification, bring_to_front
 from vietzip.utils.file_utils import get_asset_path, open_in_explorer
 from vietzip.utils.format_utils import format_eta, format_speed, human_size
 from vietzip.utils.logging_utils import logger
@@ -459,7 +459,7 @@ class MainWindow(BaseWindow):
         if self._history_win is None or not self._history_win.winfo_exists():
             self._history_win = HistoryWindow(self)
         else:
-            self._history_win.focus()
+            bring_to_front(self._history_win, self)
 
     def _open_settings(self):
         if self._settings_win is None or not self._settings_win.winfo_exists():
@@ -470,13 +470,13 @@ class MainWindow(BaseWindow):
                 ),
             )
         else:
-            self._settings_win.focus()
+            bring_to_front(self._settings_win, self)
 
     def _open_about(self):
         if self._about_win is None or not self._about_win.winfo_exists():
             self._about_win = AboutWindow(self)
         else:
-            self._about_win.focus()
+            bring_to_front(self._about_win, self)
 
     # ------------------------------------------------ Tác vụ Nén & Giải nén --
     def _start_compression_task(
@@ -644,6 +644,7 @@ class MainWindow(BaseWindow):
             messagebox.showerror(
                 "Lỗi tác vụ — VietZIP",
                 f"Tác vụ không thành công:\n\n{err_msg}\n\nChi tiết: {res.error_details}",
+                parent=self,
             )
             return
 

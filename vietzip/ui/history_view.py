@@ -20,6 +20,7 @@ from vietzip.ui.theme import (
     FONT_SECTION,
     FONT_SMALL,
 )
+from vietzip.ui.widgets import setup_toplevel_window
 from vietzip.utils.file_utils import get_asset_path, open_file, open_in_explorer
 from vietzip.utils.format_utils import human_size
 
@@ -30,8 +31,8 @@ class HistoryWindow(ctk.CTkToplevel):
     def __init__(self, master):
         super().__init__(master)
         self.title("Lịch sử tác vụ — VietZIP")
-        self.geometry("760x520")
         self.minsize(640, 400)
+        setup_toplevel_window(self, master, 760, 520)
 
         ico_path = get_asset_path("vietzip.ico")
         if ico_path.exists():
@@ -205,6 +206,6 @@ class HistoryWindow(ctk.CTkToplevel):
                     ).pack(side="left")
 
     def _clear_all(self):
-        if messagebox.askyesno("Xác nhận", "Bạn có chắc muốn xóa toàn bộ lịch sử?"):
+        if messagebox.askyesno("Xác nhận", "Bạn có chắc muốn xóa toàn bộ lịch sử?", parent=self):
             history_service.clear()
             self._load_records()

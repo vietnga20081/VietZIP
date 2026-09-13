@@ -49,6 +49,15 @@ jobs:
         run: |
           python -m PyInstaller VietZIP_Setup.spec --noconfirm --clean
 
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: VietZIP-Windows-Build
+          path: |
+            dist/VietZIP_Setup.exe
+            VietZIP_Portable.zip
+          retention-days: 14
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')

@@ -256,7 +256,7 @@ class ExtractView(ctk.CTkFrame):
         """Nạp file ZIP và hiển thị metadata cùng nội dung xem trước."""
         p = Path(file_path).resolve()
         if not p.exists() or not p.is_file():
-            messagebox.showerror("VietZIP", f"File không tồn tại: {file_path}")
+            messagebox.showerror("VietZIP", f"File không tồn tại: {file_path}", parent=self.winfo_toplevel())
             return
 
         self.current_zip_path = str(p)
@@ -273,7 +273,7 @@ class ExtractView(ctk.CTkFrame):
             self.archive_metadata = get_archive_metadata(p)
             self.all_entries = list_archive_entries(p)
         except Exception as exc:
-            messagebox.showerror("VietZIP", f"Không thể đọc file ZIP:\n{exc}")
+            messagebox.showerror("VietZIP", f"Không thể đọc file ZIP:\n{exc}", parent=self.winfo_toplevel())
             self.meta_label.configure(text=f"⚠️ Lỗi đọc file ZIP: {exc}")
             return
 
@@ -294,6 +294,7 @@ class ExtractView(ctk.CTkFrame):
                 "Cảnh báo Archive",
                 self.archive_metadata.zip_bomb_warning
                 or "Archive có tỷ lệ nén bất thường, hãy cẩn thận khi giải nén!",
+                parent=self.winfo_toplevel(),
             )
 
         self._on_filter_changed()
@@ -315,12 +316,13 @@ class ExtractView(ctk.CTkFrame):
         path = filedialog.askopenfilename(
             title="Chọn file ZIP cần giải nén",
             filetypes=[("ZIP Archive", "*.zip"), ("All Files", "*.*")],
+            parent=self.winfo_toplevel(),
         )
         if path:
             self.load_zip(path)
 
     def _choose_dest_dir(self):
-        dir_path = filedialog.askdirectory(title="Chọn thư mục giải nén")
+        dir_path = filedialog.askdirectory(title="Chọn thư mục giải nén", parent=self.winfo_toplevel())
         if dir_path:
             self.dest_dir_entry.delete(0, "end")
             self.dest_dir_entry.insert(0, dir_path)
@@ -413,10 +415,10 @@ class ExtractView(ctk.CTkFrame):
         dest_dir = self.dest_dir_entry.get().strip()
 
         if not zip_path or not Path(zip_path).exists():
-            messagebox.showwarning("VietZIP", "Vui lòng chọn file ZIP hợp lệ!")
+            messagebox.showwarning("VietZIP", "Vui lòng chọn file ZIP hợp lệ!", parent=self.winfo_toplevel())
             return
         if not dest_dir:
-            messagebox.showwarning("VietZIP", "Vui lòng chọn nơi để giải nén!")
+            messagebox.showwarning("VietZIP", "Vui lòng chọn nơi để giải nén!", parent=self.winfo_toplevel())
             return
 
         password = self.pwd_entry.get().strip() or None

@@ -25,6 +25,7 @@ from vietzip.ui.theme import (
     FONT_SECTION,
     FONT_SMALL,
 )
+from vietzip.ui.widgets import bring_to_front, setup_toplevel_window
 from vietzip.utils.file_utils import get_asset_path
 
 
@@ -34,10 +35,10 @@ class SettingsWindow(ctk.CTkToplevel):
     def __init__(self, master, on_theme_change=None):
         super().__init__(master)
         self.title("Cài đặt — VietZIP")
-        self.geometry("540x510")
         self.minsize(500, 480)
         self.resizable(False, False)
         self.on_theme_change = on_theme_change
+        setup_toplevel_window(self, master, 540, 510)
 
         ico_path = get_asset_path("vietzip.ico")
         if ico_path.exists():
@@ -247,7 +248,8 @@ class SettingsWindow(ctk.CTkToplevel):
 
     def _open_about(self):
         from vietzip.ui.about_view import AboutWindow
-        AboutWindow(self)
+        win = AboutWindow(self)
+        bring_to_front(win, self)
 
     def _refresh_context_menu_status(self):
         registered = is_context_menu_registered()
@@ -269,17 +271,17 @@ class SettingsWindow(ctk.CTkToplevel):
     def _on_register_context_menu(self):
         ok, msg = register_context_menu()
         if ok:
-            messagebox.showinfo("Menu chuột phải", msg)
+            messagebox.showinfo("Menu chuột phải", msg, parent=self)
         else:
-            messagebox.showerror("Lỗi", msg)
+            messagebox.showerror("Lỗi", msg, parent=self)
         self._refresh_context_menu_status()
 
     def _on_unregister_context_menu(self):
         ok, msg = unregister_context_menu()
         if ok:
-            messagebox.showinfo("Menu chuột phải", msg)
+            messagebox.showinfo("Menu chuột phải", msg, parent=self)
         else:
-            messagebox.showerror("Lỗi", msg)
+            messagebox.showerror("Lỗi", msg, parent=self)
         self._refresh_context_menu_status()
 
     def _on_theme_select(self, val):
