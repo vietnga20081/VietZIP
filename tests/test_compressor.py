@@ -109,3 +109,39 @@ def test_compress_duplicate_inputs(tmp_path):
     with zipfile.ZipFile(out_zip, "r") as zf:
         assert len(zf.namelist()) == 1
 
+
+
+def test_compress_password_with_unicode_names_and_verify(tmp_path):
+    """Hồi quy: AES + tên file tiếng Việt + verify=True từng báo CRC lỗi giả (testzip khi còn ở chế độ ghi)."""
+    import pyzipper
+
+    src = tmp_path / "tài liệu"
+    src.mkdir()
+    (src / "báo cáo tháng 9.txt").write_text("nội dung " * 2000, encoding="utf-8")
+    out = tmp_path / "kết quả.zip"
+
+    res = compress_archive([src], out, password="Mật khẩu 123", verify=True)
+    assert res.success, res.error
+
+    with pyzipper.AESZipFile(out) as zf:
+        zf.setpassword("Mật khẩu 123".encode("utf-8"))
+        assert zf.testzip() is None
+        assert any(n.endswith("báo cáo tháng 9.txt") for n in zf.namelist())
+    assert not (tmp_path / "kết quả.zip.tmp").exists()
+
+
+def test_compress_cancel_mid_file_reports_cancelled_and_cleans_tmp(tmp_path):
+    """Hồi quy: hủy khi đang ghi giữa một file từng trả về lỗi ValueError thay vì cancelled."""
+    big = tmp_path / "big.bin"
+    big.write_bytes(b"x" * (4 * 1024 * 1024))
+    out = tmp_path / "mid.zip"
+    ev = threading.Event()
+
+    def on_progress(_info):
+        ev.set()  # hủy ngay sau chunk đầu tiên
+
+    res = compress_archive([big], out, cancel_event=ev, progress_callback=on_progress, chunk_size=64 * 1024)
+    assert res.cancelled is True
+    assert res.success is False and res.error is None
+    assert not out.exists()
+    assert not (tmp_path / "mid.zip.tmp").exists()

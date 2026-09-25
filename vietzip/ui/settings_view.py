@@ -1,311 +1,283 @@
-"""Settings window view."""
+"""Cửa sổ Cài đặt: sidebar (Giao diện / Nén / Giải nén / Hệ thống) + Lưu / Hủy."""
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from tkinter import messagebox
+
 import customtkinter as ctk
 
-from vietzip.core.models import COMPRESSION_LEVELS, OverwritePolicy
+from vietzip.core.models import OverwritePolicy
 from vietzip.services.context_menu_service import (
     is_context_menu_registered,
     register_context_menu,
     unregister_context_menu,
 )
-from vietzip.services.settings_service import settings_service
+from vietzip.services.settings_service import get_config_dir, settings_service
+from vietzip.ui.compress_view import LEVEL_CHOICES
+from vietzip.ui.components import AppButton, StatusBadge
 from vietzip.ui.theme import (
+    COLOR_BG,
     COLOR_BORDER,
-    COLOR_BTN_OUTLINE_TEXT,
-    COLOR_CARD,
-    COLOR_PRIMARY,
-    COLOR_SEGMENT_TEXT,
+    COLOR_DANGER,
+    COLOR_SURFACE,
+    COLOR_TEXT_MUTED,
     COLOR_TEXT_PRIMARY,
     COLOR_TEXT_SECONDARY,
-    BTN_SECONDARY_STYLE,
-    FONT_REGULAR,
+    ENTRY_STYLE,
+    FONT_BODY,
+    FONT_HEADING,
     FONT_SECTION,
     FONT_SMALL,
+    OPTION_STYLE,
+    SP4,
+    SP8,
+    SP12,
+    SP16,
+    SP20,
+    SP24,
+    SWITCH_STYLE,
 )
-from vietzip.ui.widgets import bring_to_front, setup_toplevel_window
-from vietzip.utils.file_utils import get_asset_path
+from vietzip.ui.widgets import setup_toplevel_window
+from vietzip.utils.file_utils import open_in_explorer
+
+THEMES = {"Theo hệ thống": "System", "Sáng": "Light", "Tối": "Dark"}
+OVERWRITE = {"Tự động đổi tên": "auto_rename", "Ghi đè": "overwrite", "Bỏ qua": "skip"}
+NAMING = {"Theo tên file/thư mục nguồn": "smart", "VietZIP + ngày giờ": "timestamp"}
+SECTIONS = ["Giao diện", "Nén", "Giải nén", "Hệ thống"]
+
+
+def _inv(d: dict, value):
+    return next((k for k, v in d.items() if v == value), next(iter(d)))
 
 
 class SettingsWindow(ctk.CTkToplevel):
-    """Cửa sổ cài đặt cấu hình VietZIP."""
-
     def __init__(self, master, on_theme_change=None):
-        super().__init__(master)
+        super().__init__(master, fg_color=COLOR_BG)
         self.title("Cài đặt — VietZIP")
-        self.minsize(500, 480)
+        self.minsize(640, 460)
         self.resizable(False, False)
-        self.on_theme_change = on_theme_change
-        setup_toplevel_window(self, master, 540, 510)
+        self._on_theme_change = on_theme_change
+        self._original_theme = settings_service.get("theme", "System")
+        setup_toplevel_window(self, master, 680, 500)
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+        self.bind("<Escape>", lambda e: self._cancel(), add="+")
+        self._build()
+        self._select("Giao diện")
 
-        ico_path = get_asset_path("vietzip.ico")
-        if ico_path.exists():
-            try:
-                self.iconbitmap(str(ico_path))
-            except Exception:
-                pass
+    # ------------------------------------------------------------------ Khung
+    def _build(self):
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
 
-        self._build_layout()
-
-    def _build_layout(self):
-        self.grid_columnconfigure(0, weight=1)
-
-        # Tabview Settings
-        tabs = ctk.CTkTabview(
-            self,
-            corner_radius=12,
-            text_color=COLOR_SEGMENT_TEXT,
-            segmented_button_unselected_color=("#E2E8F0", "gray29"),
-            segmented_button_unselected_hover_color=("#CBD5E1", "gray41"),
+        side = ctk.CTkFrame(self, corner_radius=0, fg_color=COLOR_SURFACE, width=170)
+        side.grid(row=0, column=0, sticky="ns")
+        side.grid_propagate(False)
+        ctk.CTkLabel(side, text="Cài đặt", font=FONT_HEADING, text_color=COLOR_TEXT_PRIMARY).pack(
+            anchor="w", padx=SP20, pady=(SP20, SP12)
         )
-        tabs.pack(fill="both", expand=True, padx=16, pady=(12, 10))
+        self._nav: dict[str, AppButton] = {}
+        for name in SECTIONS:
+            b = AppButton(side, text=name, kind="ghost", anchor="w", command=lambda n=name: self._select(n))
+            b.pack(fill="x", padx=SP12, pady=2)
+            self._nav[name] = b
 
-        tab_gen = tabs.add("Chung")
-        tab_comp = tabs.add("Nén")
-        tab_ext = tabs.add("Giải nén")
-        tab_sys = tabs.add("Hệ thống")
+        self.content = ctk.CTkFrame(self, fg_color="transparent")
+        self.content.grid(row=0, column=1, sticky="nsew", padx=SP24, pady=SP20)
+        self.content.grid_columnconfigure(0, weight=1)
+        self._pages = {
+            "Giao diện": self._page_ui(),
+            "Nén": self._page_compress(),
+            "Giải nén": self._page_extract(),
+            "Hệ thống": self._page_system(),
+        }
 
-        # ---- Tab Chung ----
-        tab_gen.grid_columnconfigure(1, weight=1)
+        foot = ctk.CTkFrame(self, fg_color="transparent")
+        foot.grid(row=1, column=1, sticky="e", padx=SP24, pady=(0, SP16))
+        AppButton(foot, text="Hủy", kind="secondary", width=90, command=self._cancel).pack(side="left", padx=SP4)
+        AppButton(foot, text="Lưu", kind="primary", width=90, command=self._save).pack(side="left", padx=SP4)
 
-        # Theme
+    def _select(self, name: str):
+        for n, page in self._pages.items():
+            if n == name:
+                page.grid(row=0, column=0, sticky="nsew")
+            else:
+                page.grid_remove()
+        for n, b in self._nav.items():
+            b.set_kind("secondary" if n == name else "ghost")
+
+    def _page(self, title: str) -> ctk.CTkFrame:
+        f = ctk.CTkFrame(self.content, fg_color="transparent")
+        f.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(f, text=title, font=FONT_HEADING, text_color=COLOR_TEXT_PRIMARY).grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, SP16)
+        )
+        return f
+
+    def _row_option(self, page, row, label, values, current):
+        ctk.CTkLabel(page, text=label, font=FONT_BODY, text_color=COLOR_TEXT_PRIMARY).grid(
+            row=row, column=0, sticky="w", pady=SP8, padx=(0, SP16)
+        )
+        m = ctk.CTkOptionMenu(page, values=values, width=230, **OPTION_STYLE)
+        m.set(current)
+        m.grid(row=row, column=1, sticky="w", pady=SP8)
+        return m
+
+    def _row_switch(self, page, row, label, value):
+        var = ctk.BooleanVar(value=value)
+        ctk.CTkLabel(page, text=label, font=FONT_BODY, text_color=COLOR_TEXT_PRIMARY).grid(
+            row=row, column=0, sticky="w", pady=SP8, padx=(0, SP16)
+        )
+        ctk.CTkSwitch(page, text="", variable=var, width=44, **{k: v for k, v in SWITCH_STYLE.items() if k not in ("text_color", "font")}).grid(
+            row=row, column=1, sticky="e", pady=SP8
+        )
+        return var
+
+    # ------------------------------------------------------------------ Trang
+    def _page_ui(self):
+        p = self._page("Giao diện")
+        self.theme_menu = self._row_option(p, 1, "Chế độ hiển thị", list(THEMES), _inv(THEMES, self._original_theme))
+        self.theme_menu.configure(command=self._preview_theme)
+        self._row_option(p, 2, "Ngôn ngữ", ["Tiếng Việt"], "Tiếng Việt").configure(state="disabled")
+        self.mascot_var = self._row_switch(p, 3, "Hiển thị logo ở màn hình trống", settings_service.get("show_mascot", True))
+        self.history_var = self._row_switch(p, 4, "Ghi lịch sử", settings_service.get("history_enabled", True))
+        self.open_var = self._row_switch(p, 5, "Mở thư mục sau khi hoàn tất", settings_service.get("open_folder_after_operation", True))
+        return p
+
+    def _page_compress(self):
+        p = self._page("Nén")
+        names = [l for l, _v, _d in LEVEL_CHOICES]
+        cur = next((l for l, v, _d in LEVEL_CHOICES if v == settings_service.get("compression_level", 6)), "Cân bằng")
+        self.level_menu = self._row_option(p, 1, "Mức nén mặc định", names, cur)
+        self.verify_var = self._row_switch(p, 2, "Xác minh CRC sau khi nén", settings_service.get("verify_archive", True))
+        self.naming_menu = self._row_option(p, 3, "Cách đặt tên file ZIP", list(NAMING), _inv(NAMING, settings_service.get("filename_behavior", "smart")))
+        ctk.CTkLabel(p, text="Thư mục lưu mặc định", font=FONT_BODY, text_color=COLOR_TEXT_PRIMARY).grid(
+            row=4, column=0, sticky="w", pady=SP8, padx=(0, SP16)
+        )
+        row = ctk.CTkFrame(p, fg_color="transparent")
+        row.grid(row=4, column=1, sticky="w")
+        self.outdir_entry = ctk.CTkEntry(row, width=230, placeholder_text="Cùng thư mục với nguồn", **{**ENTRY_STYLE})
+        self.outdir_entry.pack(side="left")
+        cur_dir = settings_service.get("default_output_dir", "")
+        if cur_dir:
+            self.outdir_entry.insert(0, cur_dir)
+        AppButton(row, text="Chọn...", kind="secondary", width=70, command=self._pick_outdir).pack(side="left", padx=SP8)
+        return p
+
+    def _page_extract(self):
+        p = self._page("Giải nén")
+        cur = _inv(OVERWRITE, settings_service.get("overwrite_policy", "auto_rename"))
+        self.ow_menu = self._row_option(p, 1, "Khi file đã tồn tại", list(OVERWRITE), cur)
+        self.sub_var = self._row_switch(p, 2, "Tạo thư mục con theo tên ZIP", settings_service.get("create_subfolder", True))
+        self.bomb_var = self._row_switch(p, 3, "Cảnh báo archive bất thường (Zip Bomb)", settings_service.get("warn_large_archive", True))
+        ctk.CTkLabel(p, text="Ngưỡng cảnh báo dung lượng (GB)", font=FONT_BODY, text_color=COLOR_TEXT_PRIMARY).grid(
+            row=4, column=0, sticky="w", pady=SP8, padx=(0, SP16)
+        )
+        self.thr_entry = ctk.CTkEntry(p, width=100, **ENTRY_STYLE)
+        self.thr_entry.insert(0, f"{float(settings_service.get('large_archive_threshold_gb', 10.0)):g}")
+        self.thr_entry.grid(row=4, column=1, sticky="w")
+        self.thr_msg = ctk.CTkLabel(p, text="", font=FONT_SMALL, text_color=COLOR_DANGER)
+        self.thr_msg.grid(row=5, column=1, sticky="w")
+        return p
+
+    def _page_system(self):
+        p = self._page("Hệ thống")
+        ctk.CTkLabel(p, text="Menu chuột phải trong Windows Explorer", font=FONT_SECTION,
+                     text_color=COLOR_TEXT_PRIMARY).grid(row=1, column=0, columnspan=2, sticky="w")
         ctk.CTkLabel(
-            tab_gen, text="Giao diện (Theme):", font=FONT_REGULAR, text_color=COLOR_TEXT_PRIMARY
-        ).grid(row=0, column=0, padx=10, pady=10, sticky="w")
-        self.theme_menu = ctk.CTkOptionMenu(
-            tab_gen,
-            values=["System", "Light", "Dark"],
-            command=self._on_theme_select,
-        )
-        self.theme_menu.set(settings_service.get("theme", "System"))
-        self.theme_menu.grid(row=0, column=1, padx=10, pady=10, sticky="w")
+            p, text="Thêm 'Nén bằng VietZIP' và 'Giải nén bằng VietZIP' khi bấm chuột phải vào file, thư mục hoặc .zip.",
+            font=FONT_SMALL, text_color=COLOR_TEXT_SECONDARY, wraplength=380, justify="left", anchor="w",
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(SP4, SP8))
+        self.ctx_badge_holder = ctk.CTkFrame(p, fg_color="transparent")
+        self.ctx_badge_holder.grid(row=3, column=0, columnspan=2, sticky="w")
+        btns = ctk.CTkFrame(p, fg_color="transparent")
+        btns.grid(row=4, column=0, columnspan=2, sticky="w", pady=SP8)
+        self.btn_on = AppButton(btns, text="Bật menu chuột phải", kind="primary", command=self._ctx_on)
+        self.btn_on.pack(side="left", padx=(0, SP8))
+        self.btn_off = AppButton(btns, text="Tắt menu chuột phải", kind="secondary", command=self._ctx_off)
+        self.btn_off.pack(side="left")
+        ctk.CTkFrame(p, height=1, fg_color=COLOR_BORDER).grid(row=5, column=0, columnspan=2, sticky="ew", pady=SP16)
+        links = ctk.CTkFrame(p, fg_color="transparent")
+        links.grid(row=6, column=0, columnspan=2, sticky="w")
+        AppButton(links, text="Mở thư mục cài đặt", kind="secondary", icon="folder", command=self._open_install).pack(side="left", padx=(0, SP8))
+        AppButton(links, text="Mở thư mục nhật ký", kind="secondary", icon="folder", command=self._open_logs).pack(side="left")
+        self._refresh_ctx()
+        return p
 
-        # Mascot
-        self.mascot_var = ctk.BooleanVar(value=settings_service.get("show_mascot", True))
-        ctk.CTkCheckBox(
-            tab_gen,
-            text="Hiển thị Mascot trạng thái ngộ nghĩnh",
-            variable=self.mascot_var,
-            font=FONT_REGULAR,
-            text_color=COLOR_TEXT_PRIMARY,
-        ).grid(row=1, column=0, columnspan=2, padx=10, pady=10, sticky="w")
+    # ------------------------------------------------------------------ Hành động
+    def _pick_outdir(self):
+        from tkinter import filedialog
+        d = filedialog.askdirectory(parent=self, title="Chọn thư mục lưu mặc định")
+        if d:
+            self.outdir_entry.delete(0, "end")
+            self.outdir_entry.insert(0, d)
 
-        # History
-        self.history_var = ctk.BooleanVar(value=settings_service.get("history_enabled", True))
-        ctk.CTkCheckBox(
-            tab_gen,
-            text="Tự động ghi nhớ lịch sử tác vụ",
-            variable=self.history_var,
-            font=FONT_REGULAR,
-            text_color=COLOR_TEXT_PRIMARY,
-        ).grid(row=2, column=0, columnspan=2, padx=10, pady=10, sticky="w")
+    def _preview_theme(self, label: str):
+        if self._on_theme_change:
+            self._on_theme_change(THEMES[label])  # xem trước ngay; Hủy sẽ hoàn tác
 
-        # Open folder after
-        self.open_folder_var = ctk.BooleanVar(
-            value=settings_service.get("open_folder_after_operation", True)
-        )
-        ctk.CTkCheckBox(
-            tab_gen,
-            text="Tự động mở thư mục sau khi hoàn thành",
-            variable=self.open_folder_var,
-            font=FONT_REGULAR,
-            text_color=COLOR_TEXT_PRIMARY,
-        ).grid(row=3, column=0, columnspan=2, padx=10, pady=10, sticky="w")
-
-        # ---- Tab Nén ----
-        tab_comp.grid_columnconfigure(1, weight=1)
-
-        ctk.CTkLabel(
-            tab_comp, text="Mức nén mặc định:", font=FONT_REGULAR, text_color=COLOR_TEXT_PRIMARY
-        ).grid(row=0, column=0, padx=10, pady=10, sticky="w")
-        self.comp_lvl_menu = ctk.CTkOptionMenu(
-            tab_comp,
-            values=list(COMPRESSION_LEVELS.keys()),
-        )
-        inv_map = {v: k for k, v in COMPRESSION_LEVELS.items()}
-        self.comp_lvl_menu.set(inv_map.get(settings_service.get("compression_level", 6), "Cân bằng ⭐"))
-        self.comp_lvl_menu.grid(row=0, column=1, padx=10, pady=10, sticky="w")
-
-        self.verify_var = ctk.BooleanVar(value=settings_service.get("verify_archive", True))
-        ctk.CTkCheckBox(
-            tab_comp,
-            text="Luôn xác minh CRC archive sau khi nén",
-            variable=self.verify_var,
-            font=FONT_REGULAR,
-            text_color=COLOR_TEXT_PRIMARY,
-        ).grid(row=1, column=0, columnspan=2, padx=10, pady=10, sticky="w")
-
-        # ---- Tab Giải nén ----
-        tab_ext.grid_columnconfigure(1, weight=1)
-
-        ctk.CTkLabel(
-            tab_ext, text="Xử lý ghi đè file:", font=FONT_REGULAR, text_color=COLOR_TEXT_PRIMARY
-        ).grid(row=0, column=0, padx=10, pady=10, sticky="w")
-        self.overwrite_menu = ctk.CTkOptionMenu(
-            tab_ext,
-            values=["Tự động đổi tên", "Ghi đè", "Bỏ qua"],
-        )
-        cur_ow = settings_service.get("overwrite_policy", "auto_rename")
-        ow_map = {"auto_rename": "Tự động đổi tên", "overwrite": "Ghi đè", "skip": "Bỏ qua"}
-        self.overwrite_menu.set(ow_map.get(cur_ow, "Tự động đổi tên"))
-        self.overwrite_menu.grid(row=0, column=1, padx=10, pady=10, sticky="w")
-
-        self.warn_bomb_var = ctk.BooleanVar(value=settings_service.get("warn_large_archive", True))
-        ctk.CTkCheckBox(
-            tab_ext,
-            text="Cảnh báo archive bất thường / Zip Bomb",
-            variable=self.warn_bomb_var,
-            font=FONT_REGULAR,
-            text_color=COLOR_TEXT_PRIMARY,
-        ).grid(row=1, column=0, columnspan=2, padx=10, pady=10, sticky="w")
-
-        ctk.CTkLabel(
-            tab_ext, text="Ngưỡng cảnh báo dung lượng (GB):", font=FONT_REGULAR, text_color=COLOR_TEXT_PRIMARY
-        ).grid(row=2, column=0, padx=10, pady=10, sticky="w")
-        self.threshold_entry = ctk.CTkEntry(tab_ext, width=100, text_color=COLOR_TEXT_PRIMARY)
-        self.threshold_entry.insert(0, str(settings_service.get("large_archive_threshold_gb", 10.0)))
-        self.threshold_entry.grid(row=2, column=1, padx=10, pady=10, sticky="w")
-
-        # ---- Tab Hệ thống (Menu chuột phải) ----
-        tab_sys.grid_columnconfigure(0, weight=1)
-
-        ctk.CTkLabel(
-            tab_sys,
-            text="Tích hợp Windows Explorer (Menu chuột phải):",
-            font=FONT_SECTION,
-            text_color=COLOR_TEXT_PRIMARY,
-        ).pack(anchor="w", padx=10, pady=(10, 4))
-
-        ctk.CTkLabel(
-            tab_sys,
-            text=(
-                "Thêm lựa chọn 'Nén bằng VietZIP' và 'Giải nén bằng VietZIP' "
-                "khi bấm chuột phải vào file/thư mục trong Windows Explorer."
-            ),
-            font=FONT_SMALL,
-            wraplength=480,
-            justify="left",
-            text_color=COLOR_TEXT_SECONDARY,
-        ).pack(anchor="w", padx=10, pady=(0, 12))
-
-        self.ctx_status_lbl = ctk.CTkLabel(
-            tab_sys,
-            text="",
-            font=FONT_REGULAR,
-        )
-        self.ctx_status_lbl.pack(anchor="w", padx=10, pady=(0, 10))
-
-        ctx_btn_row = ctk.CTkFrame(tab_sys, fg_color="transparent")
-        ctx_btn_row.pack(anchor="w", padx=10, pady=4)
-
-        self.btn_reg_ctx = ctk.CTkButton(
-            ctx_btn_row,
-            text="➕ Thêm vào menu chuột phải",
-            width=210,
-            command=self._on_register_context_menu,
-        )
-        self.btn_reg_ctx.pack(side="left", padx=(0, 8))
-
-        self.btn_unreg_ctx = ctk.CTkButton(
-            ctx_btn_row,
-            text="➖ Gỡ bỏ khỏi menu",
-            width=160,
-            **BTN_SECONDARY_STYLE,
-            command=self._on_unregister_context_menu,
-        )
-        self.btn_unreg_ctx.pack(side="left")
-
-        self._refresh_context_menu_status()
-
-        # Bottom Buttons
-        btn_box = ctk.CTkFrame(self, fg_color="transparent")
-        btn_box.pack(fill="x", padx=16, pady=(0, 14))
-
-        ctk.CTkButton(
-            btn_box,
-            text="ℹ️ Giới thiệu & Donate",
-            width=160,
-            **BTN_SECONDARY_STYLE,
-            command=self._open_about,
-        ).pack(side="left")
-
-        ctk.CTkButton(
-            btn_box,
-            text="Lưu cài đặt",
-            width=110,
-            command=self._save_settings,
-        ).pack(side="right", padx=(8, 0))
-
-        ctk.CTkButton(
-            btn_box,
-            text="Hủy",
-            width=80,
-            **BTN_SECONDARY_STYLE,
-            command=self.destroy,
-        ).pack(side="right")
-
-    def _open_about(self):
-        from vietzip.ui.about_view import AboutWindow
-        win = AboutWindow(self)
-        bring_to_front(win, self)
-
-    def _refresh_context_menu_status(self):
-        registered = is_context_menu_registered()
-        if registered:
-            self.ctx_status_lbl.configure(
-                text="✓ Trạng thái: Đã tích hợp vào Menu chuột phải.",
-                text_color="#10B981",
-            )
-            self.btn_reg_ctx.configure(state="disabled")
-            self.btn_unreg_ctx.configure(state="normal")
+    def _refresh_ctx(self):
+        for w in self.ctx_badge_holder.winfo_children():
+            w.destroy()
+        on = is_context_menu_registered()
+        if on:
+            StatusBadge(self.ctx_badge_holder, "success", "Đã bật").pack(side="left")
         else:
-            self.ctx_status_lbl.configure(
-                text="○ Trạng thái: Chưa tích hợp vào Menu chuột phải.",
-                text_color=COLOR_TEXT_SECONDARY,
-            )
-            self.btn_reg_ctx.configure(state="normal")
-            self.btn_unreg_ctx.configure(state="disabled")
+            StatusBadge(self.ctx_badge_holder, "info", "Chưa bật", icon="close").pack(side="left")
+        self.btn_on.configure(state="disabled" if on else "normal")
+        self.btn_off.configure(state="normal" if on else "disabled")
+        if sys.platform != "win32":
+            self.btn_on.configure(state="disabled")
+            ctk.CTkLabel(self.ctx_badge_holder, text="  Chỉ khả dụng trên Windows", font=FONT_SMALL,
+                         text_color=COLOR_TEXT_MUTED).pack(side="left")
 
-    def _on_register_context_menu(self):
+    def _ctx_on(self):
         ok, msg = register_context_menu()
-        if ok:
-            messagebox.showinfo("Menu chuột phải", msg, parent=self)
-        else:
-            messagebox.showerror("Lỗi", msg, parent=self)
-        self._refresh_context_menu_status()
+        (messagebox.showinfo if ok else messagebox.showerror)("Menu chuột phải", msg, parent=self)
+        self._refresh_ctx()
 
-    def _on_unregister_context_menu(self):
+    def _ctx_off(self):
         ok, msg = unregister_context_menu()
-        if ok:
-            messagebox.showinfo("Menu chuột phải", msg, parent=self)
-        else:
-            messagebox.showerror("Lỗi", msg, parent=self)
-        self._refresh_context_menu_status()
+        (messagebox.showinfo if ok else messagebox.showerror)("Menu chuột phải", msg, parent=self)
+        self._refresh_ctx()
 
-    def _on_theme_select(self, val):
-        if self.on_theme_change:
-            self.on_theme_change(val)
+    def _open_install(self):
+        base = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[2]
+        open_in_explorer(base)
 
-    def _save_settings(self):
-        settings_service.set("theme", self.theme_menu.get())
-        settings_service.set("show_mascot", self.mascot_var.get())
-        settings_service.set("history_enabled", self.history_var.get())
-        settings_service.set("open_folder_after_operation", self.open_folder_var.get())
+    def _open_logs(self):
+        for cand in (Path("logs").resolve(), get_config_dir()):
+            if cand.exists():
+                open_in_explorer(cand)
+                return
 
-        lvl_name = self.comp_lvl_menu.get()
-        settings_service.set("compression_level", COMPRESSION_LEVELS.get(lvl_name, 6))
-        settings_service.set("verify_archive", self.verify_var.get())
+    def _cancel(self):
+        if self._on_theme_change and settings_service.get("theme", "System") != self._original_theme:
+            self._on_theme_change(self._original_theme)
+        self.destroy()
 
-        inv_ow = {"Tự động đổi tên": "auto_rename", "Ghi đè": "overwrite", "Bỏ qua": "skip"}
-        settings_service.set("overwrite_policy", inv_ow.get(self.overwrite_menu.get(), "auto_rename"))
-        settings_service.set("warn_large_archive", self.warn_bomb_var.get())
-
+    def _save(self):
         try:
-            val = float(self.threshold_entry.get().strip())
-            settings_service.set("large_archive_threshold_gb", val)
+            thr = float(self.thr_entry.get().strip().replace(",", "."))
+            if thr <= 0:
+                raise ValueError
         except ValueError:
-            pass
-
+            self._select("Giải nén")
+            self.thr_msg.configure(text="Nhập một số lớn hơn 0 (ví dụ 10).")
+            return
+        s = settings_service
+        s.set("theme", THEMES[self.theme_menu.get()])
+        s.set("show_mascot", self.mascot_var.get())
+        s.set("history_enabled", self.history_var.get())
+        s.set("open_folder_after_operation", self.open_var.get())
+        s.set("compression_level", next(v for l, v, _d in LEVEL_CHOICES if l == self.level_menu.get()))
+        s.set("verify_archive", self.verify_var.get())
+        s.set("filename_behavior", NAMING[self.naming_menu.get()])
+        s.set("default_output_dir", self.outdir_entry.get().strip())
+        s.set("overwrite_policy", OverwritePolicy(OVERWRITE[self.ow_menu.get()]).value)
+        s.set("create_subfolder", self.sub_var.get())
+        s.set("warn_large_archive", self.bomb_var.get())
+        s.set("large_archive_threshold_gb", thr)
+        self._original_theme = s.get("theme")
         self.destroy()

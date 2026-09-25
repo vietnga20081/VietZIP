@@ -53,3 +53,44 @@ def format_timestamp(dt: Optional[datetime] = None) -> str:
     if dt is None:
         dt = datetime.now()
     return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def shorten_middle(text: str, max_chars: int = 60) -> str:
+    """Rút gọn chuỗi dài ở giữa: C:\\Users\\...\\Documents\\file.txt (không làm vỡ layout)."""
+    if max_chars < 8 or len(text) <= max_chars:
+        return text
+    keep = max_chars - 1
+    head = keep // 2
+    tail = keep - head
+    return f"{text[:head]}…{text[-tail:]}"
+
+
+def format_eta_human(seconds: Optional[float]) -> str:
+    """ETA thân thiện: 'Còn khoảng 8 giây', 'Còn khoảng 2 phút 5 giây'."""
+    if seconds is None or seconds < 0:
+        return "Đang ước tính..."
+    sec = int(round(seconds))
+    if sec < 1:
+        return "Sắp xong"
+    if sec > 86400:
+        return "Còn hơn 24 giờ"
+    hours, rem = divmod(sec, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"Còn khoảng {hours} giờ {minutes} phút"
+    if minutes:
+        return f"Còn khoảng {minutes} phút {secs} giây"
+    return f"Còn khoảng {secs} giây"
+
+
+def format_duration(seconds: float) -> str:
+    """Thời gian đã chạy: '8.4 giây', '2 phút 5 giây'."""
+    if seconds < 60:
+        return f"{seconds:.1f} giây"
+    minutes, secs = divmod(int(round(seconds)), 60)
+    return f"{minutes} phút {secs} giây"
+
+
+def format_count(n: int) -> str:
+    """Số có dấu phân cách nghìn kiểu Việt: 1.284."""
+    return f"{n:,}".replace(",", ".")

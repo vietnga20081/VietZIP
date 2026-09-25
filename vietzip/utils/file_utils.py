@@ -58,12 +58,15 @@ def open_in_explorer(target_path: Path | str) -> bool:
         if sys.platform == "win32":
             if p.is_file():
                 # Chọn file trong explorer
-                subprocess.run(f'explorer /select,"{p}"', shell=True, check=False)
+                # Không dùng shell=True: chuỗi được truyền thẳng cho CreateProcess nên
+                # ký tự đặc biệt trong đường dẫn (& % ^) không bị cmd.exe diễn giải.
+                subprocess.run(f'explorer /select,"{p}"', check=False)
             else:
                 os.startfile(str(p))
             return True
         elif sys.platform == "darwin":
-            subprocess.run(["open", "-R" if p.is_file() else "", str(p)], check=False)
+            cmd = ["open", "-R", str(p)] if p.is_file() else ["open", str(p)]
+            subprocess.run(cmd, check=False)
             return True
         else:
             folder = p.parent if p.is_file() else p
