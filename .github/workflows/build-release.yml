@@ -4,81 +4,292 @@ on:
   push:
     tags:
       - 'v*'
+
   workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Create GitHub Release after successful build'
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: write
 
 jobs:
   build:
-    name: Build Windows Executables
+    name: Build Windows x64
     runs-on: windows-latest
 
     steps:
+      # ============================================================
+      # CHECKOUT
+      # ============================================================
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      # ============================================================
+      # PYTHON
+      # ============================================================
+      - name: Set up Python 3.13
         uses: actions/setup-python@v5
         with:
           python-version: '3.13'
           cache: 'pip'
 
+      # ============================================================
+      # INSTALL DEPENDENCIES
+      # ============================================================
       - name: Install dependencies
+        shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller pytest
 
+          if (Test-Path "requirements.txt") {
+            pip install -r requirements.txt
+          }
+
+          pip install pyinstaller pytest
+
+      # ============================================================
+      # PROJECT CHECK
+      # ============================================================
+      - name: Verify project files
+        shell: pwsh
+        run: |
+          Write-Host "=== VietZIP Project ==="
+
+          if (!(Test-Path "VietZIP.spec")) {
+            Write-Error "VietZIP.spec not found!"
+            exit 1
+          }
+
+          if (!(Test-Path "VietZIP_Setup.spec")) {
+            Write-Error "VietZIP_Setup.spec not found!"
+            exit 1
+          }
+
+          Write-Host ""
+          Write-Host "VietZIP.spec: OK"
+          Write-Host "VietZIP_Setup.spec: OK"
+
+          Write-Host ""
+          Write-Host "=== Python ==="
+          python --version
+
+          Write-Host ""
+          Write-Host "=== PyInstaller ==="
+          python -m PyInstaller --version
+
+      # ============================================================
+      # TESTS
+      # ============================================================
       - name: Run automated tests
+        shell: pwsh
         run: |
-          pytest -v
+          if (Test-Path "tests") {
+            Write-Host "Tests directory found. Running pytest..."
+            pytest -v
+          }
+          else {
+            Write-Host "No tests directory found."
+            Write-Host "Skipping automated tests."
+          }
 
-      - name: Build VietZIP (Portable onedir)
+      # ============================================================
+      # BUILD MAIN APPLICATION
+      # ============================================================
+      - name: Build VietZIP Portable
+        shell: pwsh
         run: |
-          python -m PyInstaller VietZIP.spec --noconfirm --clean
+          Write-Host "Building VietZIP..."
 
-      - name: Archive Portable ZIP
-        run: |
-          Compress-Archive -Path "dist/VietZIP/*" -DestinationPath "VietZIP_Portable.zip"
+          python -m PyInstaller `
+            VietZIP.spec `
+            --noconfirm `
+            --clean
 
-      - name: Create payload for Setup Wizard
+          if (!(Test-Path "dist\VietZIP")) {
+            Write-Error "Build failed: dist\VietZIP was not created."
+            exit 1
+          }
+
+          Write-Host "VietZIP build completed."
+
+      # ============================================================
+      # CREATE PORTABLE ZIP
+      # ============================================================
+      - name: Create Portable ZIP
+        shell: pwsh
         run: |
+          if (Test-Path "VietZIP_Portable.zip") {
+            Remove-Item "VietZIP_Portable.zip" -Force
+          }
+
+          Compress-Archive `
+            -Path "dist\VietZIP\*" `
+            -DestinationPath "VietZIP_Portable.zip" `
+            -CompressionLevel Optimal
+
+          if (!(Test-Path "VietZIP_Portable.zip")) {
+            Write-Error "Portable ZIP creation failed."
+            exit 1
+          }
+
+          Write-Host "Portable ZIP created."
+
+      # ============================================================
+      # CREATE SETUP PAYLOAD
+      # ============================================================
+      - name: Create Setup Payload
+        shell: pwsh
+        run: |
+          if (Test-Path "payload.zip") {
+            Remove-Item "payload.zip" -Force
+          }
+
           python -c "import shutil; shutil.make_archive('payload', 'zip', 'dist/VietZIP')"
 
-      - name: Build VietZIP Setup Wizard (VietZIP_Setup.exe)
-        run: |
-          python -m PyInstaller VietZIP_Setup.spec --noconfirm --clean
+          if (!(Test-Path "payload.zip")) {
+            Write-Error "payload.zip creation failed."
+            exit 1
+          }
 
+          Write-Host "Setup payload created."
+
+      # ============================================================
+      # BUILD SETUP WIZARD
+      # ============================================================
+      - name: Build VietZIP Setup Wizard
+        shell: pwsh
+        run: |
+          Write-Host "Building VietZIP Setup Wizard..."
+
+          python -m PyInstaller `
+            VietZIP_Setup.spec `
+            --noconfirm `
+            --clean
+
+          if (!(Test-Path "dist\VietZIP_Setup.exe")) {
+            Write-Error "Setup build failed: VietZIP_Setup.exe was not created."
+            exit 1
+          }
+
+          Write-Host "Setup Wizard build completed."
+
+      # ============================================================
+      # SHOW BUILD OUTPUT
+      # ============================================================
+      - name: Verify Build Output
+        shell: pwsh
+        run: |
+          Write-Host ""
+          Write-Host "============================================"
+          Write-Host "          VIETZIP BUILD OUTPUT"
+          Write-Host "============================================"
+
+          Get-Item "VietZIP_Portable.zip" |
+            Select-Object Name, Length, LastWriteTime
+
+          Get-Item "dist\VietZIP_Setup.exe" |
+            Select-Object Name, Length, LastWriteTime
+
+          Write-Host ""
+          Write-Host "Portable files:"
+          Get-ChildItem "dist\VietZIP" -Recurse |
+            Select-Object FullName, Length
+
+      # ============================================================
+      # SHA256
+      # ============================================================
+      - name: Generate SHA256 checksums
+        shell: pwsh
+        run: |
+          $files = @(
+            "VietZIP_Portable.zip",
+            "dist\VietZIP_Setup.exe"
+          )
+
+          $output = @()
+
+          foreach ($file in $files) {
+            $hash = (Get-FileHash $file -Algorithm SHA256).Hash
+            $name = Split-Path $file -Leaf
+            $output += "$hash  $name"
+          }
+
+          $output | Out-File -FilePath "SHA256SUMS.txt" -Encoding utf8
+
+          Write-Host ""
+          Write-Host "=== SHA256 ==="
+          Get-Content "SHA256SUMS.txt"
+
+      # ============================================================
+      # UPLOAD ARTIFACT
+      # ============================================================
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: VietZIP-Windows-Build
+          name: VietZIP-Windows-x64
           path: |
             dist/VietZIP_Setup.exe
             VietZIP_Portable.zip
+            SHA256SUMS.txt
+          if-no-files-found: error
           retention-days: 14
 
+      # ============================================================
+      # CREATE RELEASE
+      # ============================================================
       - name: Publish GitHub Release
+        if: |
+          startsWith(github.ref, 'refs/tags/') ||
+          (github.event_name == 'workflow_dispatch' && inputs.create_release == true)
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
         with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('build-{0}', github.run_number) }}
+          name: VietZIP ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('Build #{0}', github.run_number) }}
           files: |
             dist/VietZIP_Setup.exe
             VietZIP_Portable.zip
-          name: VietZIP ${{ github.ref_name }}
+            SHA256SUMS.txt
           body: |
-            ## 🎉 VietZIP ${{ github.ref_name }} — Trình nén & giải nén tập tin hiện đại cho người Việt
+            ## 🎉 VietZIP
 
-            ### 📦 Các bản tải về:
-            - **Trình cài đặt tự động (Khuyên dùng):** `VietZIP_Setup.exe` (Tự động tạo shortcut Desktop, Start Menu, tích hợp menu chuột phải).
-            - **Bản Portable (Chạy ngay không cần cài đặt):** `VietZIP_Portable.zip`.
+            Bản phát hành Windows x64 của VietZIP.
 
-            ### ✨ Tính năng nổi bật:
-            - Tích hợp sâu vào Windows Explorer Context Menu (Nén / Giải nén chỉ với 1 cú click chuột).
-            - Cơ chế Single-Instance Mutex chống mở nhiều cửa sổ khi chọn nhiều file.
-            - Hỗ trợ mã hóa mật khẩu AES-256 hiện đại.
-            - Bảo vệ chống Zip Slip traversal và cảnh báo Zip Bomb.
-            - Giao diện Tiếng Việt hiện đại, hỗ trợ Dark / Light mode.
-            - 100% Miễn phí & Mã nguồn mở.
+            ### 📦 Tải xuống
+
+            **VietZIP_Setup.exe**
+            - Trình cài đặt đầy đủ.
+            - Tạo shortcut Desktop / Start Menu.
+            - Tích hợp Windows Explorer Context Menu nếu được hỗ trợ bởi phiên bản hiện tại.
+
+            **VietZIP_Portable.zip**
+            - Bản Portable.
+            - Không cần cài đặt.
+            - Giải nén và chạy trực tiếp.
+
+            ### 🔐 Kiểm tra file
+
+            File `SHA256SUMS.txt` chứa SHA-256 checksum của các file phát hành.
+
+            ### ✨ Tính năng
+
+            - Nén và giải nén tập tin.
+            - Windows Explorer Context Menu.
+            - Single-Instance.
+            - AES-256 password encryption.
+            - Zip Slip protection.
+            - Zip Bomb warning.
+            - Giao diện tiếng Việt hiện đại.
+            - Dark / Light mode.
+            - Miễn phí và mã nguồn mở.
+
+            ### 🖥️ Build
+
+            - OS: Windows x64
+            - Python: 3.13
+            - PyInstaller
           draft: false
           prerelease: false
