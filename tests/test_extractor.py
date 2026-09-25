@@ -5,7 +5,7 @@ import zipfile
 from pathlib import Path
 
 from vietzip.core.compressor import compress_archive
-from vietzip.core.extractor import extract_archive
+from vietzip.core.extractor import extract_archive, extract_selected
 from vietzip.core.models import OverwritePolicy
 
 
@@ -125,3 +125,39 @@ def test_extract_cancel_mid_file_removes_partial(tmp_path):
     res = extract_archive(z, dest, cancel_event=ev, progress_callback=lambda _i: ev.set(), chunk_size=64 * 1024)
     assert res.cancelled is True
     assert not (dest / "big.bin").exists()
+
+
+def test_extract_selected_only_extracts_chosen_members(tmp_path):
+    """v2.1: giải nén chọn lọc — chỉ các entry được chỉ định mới xuất hiện ở đích."""
+    src_dir = tmp_path / "src"
+    (src_dir / "sub").mkdir(parents=True)
+    (src_dir / "a.txt").write_text("A")
+    (src_dir / "b.txt").write_text("B")
+    (src_dir / "sub" / "c.txt").write_text("C")
+
+    z = tmp_path / "test.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.write(src_dir / "a.txt", "a.txt")
+        zf.write(src_dir / "b.txt", "b.txt")
+        zf.write(src_dir / "sub" / "c.txt", "sub/c.txt")
+
+    dest = tmp_path / "out"
+    res = extract_selected(z, dest, members=["b.txt", "sub/c.txt"])
+
+    assert res.success is True
+    assert res.file_count == 2
+    assert not (dest / "a.txt").exists()
+    assert (dest / "b.txt").read_text() == "B"
+    assert (dest / "sub" / "c.txt").read_text() == "C"
+
+
+def test_extract_selected_empty_members_returns_error(tmp_path):
+    src = tmp_path / "a.txt"
+    src.write_text("A")
+    z = tmp_path / "test.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.write(src, "a.txt")
+
+    res = extract_selected(z, tmp_path / "out", members=["khong_ton_tai.txt"])
+    assert res.success is False
+    assert res.cancelled is False

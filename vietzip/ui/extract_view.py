@@ -72,7 +72,7 @@ class ExtractView(ctk.CTkFrame):
     def __init__(
         self,
         master,
-        on_start: Callable[[str, str, Optional[str], OverwritePolicy], None],
+        on_start: Callable[[str, str, Optional[str], OverwritePolicy, Optional[list[str]]], None],
         notify: Callable[[str, str, str], None],
         **kwargs,
     ):
@@ -335,8 +335,18 @@ class ExtractView(ctk.CTkFrame):
             bring_to_front(self._contents_win, self.winfo_toplevel())
             return
         self._contents_win = ArchiveContentsWindow(
-            self.winfo_toplevel(), Path(self.zip_path).name, self.entries
+            self.winfo_toplevel(), Path(self.zip_path).name, self.entries,
+            zip_path=self.zip_path, password=self.pwd_entry.get() or None,
+            on_extract_selected=self._start_selected_extraction,
         )
+
+    def _start_selected_extraction(self, members: list[str]):
+        """Callback từ ArchiveContentsWindow: giải nén CHỈ các mục người dùng đã tick.
+
+        Dùng lại đúng đích/mật khẩu/chính sách trùng tên đã cấu hình ở màn hình này —
+        người dùng chỉ cần bấm "Xem nội dung" rồi tick chọn, không phải nhập lại gì.
+        """
+        self._on_click_start(members=members)
 
     # ------------------------------------------------------------------ Bố cục theo trạng thái
     def _refresh_layout(self):
@@ -430,10 +440,12 @@ class ExtractView(ctk.CTkFrame):
     def start(self):
         self._on_click_start()
 
-    def _on_click_start(self):
+    def _on_click_start(self, members: Optional[list[str]] = None):
         if self._busy or not self._validate():
             return
         m = self.meta
+        # Cảnh báo zip-bomb dựa trên toàn bộ archive; vẫn hiện dù giải nén chọn lọc
+        # vì tỷ lệ nén bất thường có thể nằm ngay trong phần người dùng chọn.
         if m is not None and m.has_zip_bomb_risk and settings_service.get("warn_large_archive", True):
             if not messagebox.askyesno(
                 "Archive có dấu hiệu bất thường",
@@ -443,7 +455,7 @@ class ExtractView(ctk.CTkFrame):
             ):
                 return
         password = self.pwd_entry.get() or None
-        self.on_start(self.zip_path, self.dest.get(), password, OverwritePolicy(self.policy_var.get()))
+        self.on_start(self.zip_path, self.dest.get(), password, OverwritePolicy(self.policy_var.get()), members)
 
     def reset(self):
         """Sau khi hoàn tất và chọn 'Giải nén tiếp'."""

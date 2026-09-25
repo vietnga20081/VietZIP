@@ -424,16 +424,22 @@ class MainWindow(BaseWindow):
         self.current_worker = threading.Thread(target=worker, daemon=True)
         self.current_worker.start()
 
-    def _start_extraction(self, zip_path, dest_dir, password, policy: OverwritePolicy):
+    def _start_extraction(
+        self, zip_path, dest_dir, password, policy: OverwritePolicy, members: Optional[list[str]] = None
+    ):
         if self.is_working:
             return
-        self._retry = lambda: self._start_extraction(zip_path, dest_dir, password, policy)
+        self._retry = lambda: self._start_extraction(zip_path, dest_dir, password, policy, members)
         self._begin_task("extract")
+        # Giải nén chọn lọc (v2.1) đổi cách hiển thị trạng thái nhưng dùng chung 1 worker/core
+        self.set_status(
+            f"Đang giải nén {len(members)} mục đã chọn..." if members else "Đang giải nén..."
+        )
 
         def worker():
             res = extract_archive(
                 zip_path=zip_path, dest_dir=dest_dir, password=password, overwrite_policy=policy,
-                cancel_event=self.cancel_event,
+                cancel_event=self.cancel_event, members=members,
                 progress_callback=lambda p: self.msg_queue.put(("progress", p)),
             )
             self.msg_queue.put(("result", res, [zip_path]))

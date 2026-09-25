@@ -91,7 +91,9 @@ class CompressView(ctk.CTkFrame):
             mode="compress",
             logo_image=get_logo_image(64) if settings_service.get("show_mascot", True) else None,
         )
-        self.file_list = FileList(self, on_remove=self.remove_item, on_clear=self.clear_all)
+        self.file_list = FileList(
+            self, on_remove=self.remove_item, on_clear=self.clear_all, on_remove_many=self.remove_items
+        )
         self.output = OutputPicker(
             self,
             label="Lưu file ZIP tại",
@@ -223,6 +225,18 @@ class CompressView(ctk.CTkFrame):
             self.items.remove(path)
             self._info.pop(path, None)
             self._refresh()
+
+    def remove_items(self, paths: list[str]):
+        """Xóa nhiều nguồn cùng lúc (v2.1 — chọn nhiều dòng trong FileList)."""
+        if self._busy:
+            return
+        wanted = set(paths)
+        if not wanted:
+            return
+        self.items = [p for p in self.items if p not in wanted]
+        for p in wanted:
+            self._info.pop(p, None)
+        self._refresh()
 
     def clear_all(self):
         if self._busy:

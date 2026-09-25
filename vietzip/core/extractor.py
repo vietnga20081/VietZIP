@@ -7,7 +7,7 @@ import time
 import zipfile
 import threading
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Iterable, Optional
 
 try:
     import pyzipper
@@ -33,6 +33,7 @@ def extract_archive(
     cancel_event: Optional[threading.Event] = None,
     progress_callback: Optional[Callable[[ProgressInfo], None]] = None,
     chunk_size: int = 1024 * 1024,
+    members: Optional[Iterable[str]] = None,
 ) -> OperationResult:
     """
     Giải nén file ZIP vào thư mục đích.
@@ -41,6 +42,9 @@ def extract_archive(
     - Kiểm tra dung lượng đĩa khả dụng.
     - Hỗ trợ cancel_event dừng giữa chừng.
     - Hỗ trợ mật khẩu (cả ZipCrypto và AES).
+    - `members`: nếu truyền vào (danh sách tên entry theo đúng `ArchiveEntry.filename`),
+      chỉ giải nén các entry này thay vì toàn bộ archive. Thư mục cha của các file được
+      chọn vẫn được tạo tự động dù entry thư mục đó không có trong danh sách.
     """
     start_time = time.time()
     source_zip = Path(zip_path).resolve()
@@ -65,6 +69,16 @@ def extract_archive(
                 zf.setpassword(password.encode("utf-8"))
 
             infolist = zf.infolist()
+            if members is not None:
+                wanted = set(members)
+                infolist = [info for info in infolist if info.filename in wanted]
+                if not infolist:
+                    return OperationResult(
+                        success=False,
+                        operation="extract",
+                        error="Không tìm thấy mục nào khớp với lựa chọn trong archive.",
+                        elapsed_seconds=time.time() - start_time,
+                    )
             total_bytes = sum(info.file_size for info in infolist)
             total_items = len(infolist)
 
@@ -211,3 +225,34 @@ def extract_archive(
             error_details=f"Lỗi giải nén: {type(exc).__name__} - {exc}",
             warnings=warnings,
         )
+
+
+def extract_selected(
+    zip_path: Path | str,
+    dest_dir: Path | str,
+    members: Iterable[str],
+    password: Optional[str] = None,
+    overwrite_policy: OverwritePolicy = OverwritePolicy.AUTO_RENAME,
+    on_overwrite_conflict: Optional[
+        Callable[[Path], tuple[OverwritePolicy, bool]]
+    ] = None,
+    cancel_event: Optional[threading.Event] = None,
+    progress_callback: Optional[Callable[[ProgressInfo], None]] = None,
+    chunk_size: int = 1024 * 1024,
+) -> OperationResult:
+    """Giải nén CHỈ các entry trong `members` (theo `ArchiveEntry.filename`).
+
+    Lớp mỏng bọc `extract_archive(..., members=...)` để lời gọi tại nơi khác trong
+    codebase (UI) đọc được ngay ý định mà không cần biết tham số `members` là gì.
+    """
+    return extract_archive(
+        zip_path=zip_path,
+        dest_dir=dest_dir,
+        password=password,
+        overwrite_policy=overwrite_policy,
+        on_overwrite_conflict=on_overwrite_conflict,
+        cancel_event=cancel_event,
+        progress_callback=progress_callback,
+        chunk_size=chunk_size,
+        members=members,
+    )
