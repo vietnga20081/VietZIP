@@ -109,3 +109,19 @@ def test_extract_corrupt_zip(tmp_path):
     assert res.success is False
     assert res.error is not None
 
+
+
+def test_extract_cancel_mid_file_removes_partial(tmp_path):
+    import threading
+
+    src = tmp_path / "big.bin"
+    src.write_bytes(b"y" * (4 * 1024 * 1024))
+    z = tmp_path / "big.zip"
+    with zipfile.ZipFile(z, "w", zipfile.ZIP_STORED) as zf:
+        zf.write(src, "big.bin")
+    dest = tmp_path / "out"
+    ev = threading.Event()
+
+    res = extract_archive(z, dest, cancel_event=ev, progress_callback=lambda _i: ev.set(), chunk_size=64 * 1024)
+    assert res.cancelled is True
+    assert not (dest / "big.bin").exists()

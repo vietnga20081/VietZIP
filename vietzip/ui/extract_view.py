@@ -1,433 +1,462 @@
-"""Extraction tab view."""
+"""Màn hình Giải nén: chọn ZIP → xem trước → nơi giải nén → tùy chọn → Giải nén ngay."""
 
 from __future__ import annotations
 
 import os
+import queue
+import threading
 from pathlib import Path
 from tkinter import filedialog, messagebox
 from typing import Callable, Optional
+
 import customtkinter as ctk
 
 from vietzip.core.archive_info import get_archive_metadata, list_archive_entries
-from vietzip.core.models import ArchiveEntry, ArchiveMetadata
+from vietzip.core.models import ArchiveEntry, ArchiveMetadata, OverwritePolicy
 from vietzip.services.recent_service import recent_service
 from vietzip.services.settings_service import settings_service
+from vietzip.ui.components import (
+    AdvancedOptions,
+    AppButton,
+    DropZone,
+    EmptyState,
+    IconButton,
+    OutputPicker,
+    StatusBadge,
+)
+from vietzip.ui.icons import get_icon
+from vietzip.ui.archive_contents_view import ArchiveContentsWindow
 from vietzip.ui.theme import (
-    COLOR_CARD,
-    COLOR_CARD_ALT,
-    COLOR_BORDER,
-    COLOR_PRIMARY,
-    COLOR_BTN_OUTLINE_TEXT,
-    COLOR_SEGMENT_TEXT,
+    CARD_STYLE,
+    CHECKBOX_STYLE,
+    COLOR_DANGER,
     COLOR_TEXT_PRIMARY,
     COLOR_TEXT_SECONDARY,
-    BTN_SECONDARY_STYLE,
-    FONT_MONO,
-    FONT_REGULAR,
+    COLOR_WARNING,
+    COLOR_WARNING_SOFT,
+    ENTRY_STYLE,
+    FONT_BUTTON_LG,
     FONT_SECTION,
     FONT_SMALL,
+    R_SM,
+    RADIO_STYLE,
+    SP4,
+    SP8,
+    SP12,
+    SP16,
 )
-from vietzip.utils.format_utils import human_size
+from vietzip.ui.widgets import bring_to_front, get_logo_image
+from vietzip.utils.error_utils import friendly_error
+from vietzip.utils.format_utils import format_count, human_size, shorten_middle
+from vietzip.utils.path_utils import suggest_extract_dir, validate_dest_dir
+
+POLICY_CHOICES = [
+    ("Tự động đổi tên — khuyến nghị", OverwritePolicy.AUTO_RENAME),
+    ("Ghi đè file cũ", OverwritePolicy.OVERWRITE),
+    ("Bỏ qua file đã có", OverwritePolicy.SKIP),
+]
+POLICY_SHORT = {
+    OverwritePolicy.AUTO_RENAME: "Tự động đổi tên",
+    OverwritePolicy.OVERWRITE: "Ghi đè",
+    OverwritePolicy.SKIP: "Bỏ qua",
+}
+
+
+def is_zip(path: str) -> bool:
+    return path.lower().endswith(".zip")
 
 
 class ExtractView(ctk.CTkFrame):
-    """Giao diện tab Giải nén file ZIP."""
+    """Giao diện Giải nén. Không chứa logic giải nén — chỉ thu thập lựa chọn rồi gọi `on_start`."""
 
     def __init__(
         self,
         master,
-        on_start_extract: Callable[[str, str, Optional[str]], None],
+        on_start: Callable[[str, str, Optional[str], OverwritePolicy], None],
+        notify: Callable[[str, str, str], None],
         **kwargs,
     ):
         super().__init__(master, fg_color="transparent", **kwargs)
-        self.on_start_extract = on_start_extract
+        self.on_start = on_start
+        self.notify = notify
 
-        self.current_zip_path: Optional[str] = None
-        self.archive_metadata: Optional[ArchiveMetadata] = None
-        self.all_entries: list[ArchiveEntry] = []
-        self.filtered_entries: list[ArchiveEntry] = []
-        self._display_limit = 300
-        self._is_busy = False
+        self.zip_path: Optional[str] = None
+        self.meta: Optional[ArchiveMetadata] = None
+        self.entries: list[ArchiveEntry] = []
+        self._loading = False
+        self._load_token = 0
+        self._load_q: queue.Queue = queue.Queue()
+        self._dest_dirty = False       # người dùng tự gõ đường dẫn
+        self._dest_user_base = ""     # thư mục gốc chọn qua nút Chọn...
+        self._busy = False
+        self._eye_visible = False
+        self._contents_win: Optional[ArchiveContentsWindow] = None
 
-        self._build_layout()
+        self._build()
+        self._refresh_layout()
 
-    def _build_layout(self):
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)
-
-        # 1. Chọn file ZIP & Nơi giải nén
-        pick_section = ctk.CTkFrame(
+    # ------------------------------------------------------------------ Dựng UI
+    def _build(self):
+        self.drop = DropZone(
             self,
-            corner_radius=12,
-            border_width=1,
-            border_color=COLOR_BORDER,
-            fg_color=COLOR_CARD,
+            on_pick_files=self.pick_zip,
+            mode="extract",
+            logo_image=get_logo_image(64) if settings_service.get("show_mascot", True) else None,
         )
-        pick_section.grid(row=0, column=0, sticky="ew", pady=(8, 6), padx=2)
-        pick_section.grid_columnconfigure(1, weight=1)
 
-        # Row 1: Pick ZIP
-        ctk.CTkLabel(
-            pick_section, text="📦 File ZIP:", font=FONT_REGULAR, text_color=COLOR_TEXT_PRIMARY, width=90, anchor="w"
-        ).grid(row=0, column=0, padx=(12, 6), pady=(10, 4), sticky="w")
+        # Slot xem trước: chứa thẻ archive hoặc trạng thái lỗi
+        self.preview_slot = ctk.CTkFrame(self, fg_color="transparent")
+        self.preview_slot.grid_columnconfigure(0, weight=1)
+        self._build_preview_card()
 
-        self.zip_path_entry = ctk.CTkEntry(
-            pick_section,
-            placeholder_text="Chọn file ZIP hoặc kéo thả vào đây...",
-            text_color=COLOR_TEXT_PRIMARY,
+        self.pwd_row = ctk.CTkFrame(self, fg_color="transparent")
+        self._build_password(self.pwd_row)
+
+        self.dest_holder = ctk.CTkFrame(self, fg_color="transparent")
+        self.dest_holder.grid_columnconfigure(0, weight=1)
+        self.dest = OutputPicker(
+            self.dest_holder, label="Giải nén vào", placeholder="Chọn thư mục giải nén...",
+            browse_text="Chọn...", on_browse=self._browse_dest, on_edit=self._on_dest_edited,
         )
-        self.zip_path_entry.grid(row=0, column=1, sticky="ew", padx=6, pady=(10, 4))
-
-        ctk.CTkButton(
-            pick_section,
-            text="Chọn ZIP",
-            width=100,
-            command=self._choose_zip_file,
-        ).grid(row=0, column=2, padx=(6, 12), pady=(10, 4))
-
-        # Row 2: Pick Destination
-        ctk.CTkLabel(
-            pick_section, text="📂 Nơi giải nén:", font=FONT_REGULAR, text_color=COLOR_TEXT_PRIMARY, width=90, anchor="w"
-        ).grid(row=1, column=0, padx=(12, 6), pady=(4, 6), sticky="w")
-
-        self.dest_dir_entry = ctk.CTkEntry(
-            pick_section,
-            placeholder_text="Thư mục sẽ giải nén các file ra...",
-            text_color=COLOR_TEXT_PRIMARY,
-        )
-        self.dest_dir_entry.grid(row=1, column=1, sticky="ew", padx=6, pady=(4, 6))
-
-        ctk.CTkButton(
-            pick_section,
-            text="Chọn thư mục",
-            width=100,
-            command=self._choose_dest_dir,
-        ).grid(row=1, column=2, padx=(6, 12), pady=(4, 6))
-
-        # Row 3: Subfolder option & Password
-        opt_row = ctk.CTkFrame(pick_section, fg_color="transparent")
-        opt_row.grid(row=2, column=0, columnspan=3, sticky="ew", padx=12, pady=(0, 10))
-
-        self.create_subfolder_var = ctk.BooleanVar(value=True)
+        self.dest.grid(row=0, column=0, sticky="ew")
+        self.subfolder_var = ctk.BooleanVar(value=settings_service.get("create_subfolder", True))
         ctk.CTkCheckBox(
-            opt_row,
-            text="Tạo thư mục con theo tên file ZIP",
-            variable=self.create_subfolder_var,
-            font=FONT_SMALL,
-            text_color=COLOR_TEXT_PRIMARY,
-            command=self._on_subfolder_toggle,
-        ).pack(side="left")
+            self.dest_holder, text="Tạo thư mục con theo tên file ZIP", variable=self.subfolder_var,
+            command=self._on_subfolder_toggle, **CHECKBOX_STYLE,
+        ).grid(row=1, column=0, sticky="w", pady=(SP8, 0))
 
-        self.pwd_entry = ctk.CTkEntry(
-            opt_row,
-            placeholder_text="Mật khẩu (nếu có)",
-            show="•",
-            width=160,
-            text_color=COLOR_TEXT_PRIMARY,
+        self.advanced = AdvancedOptions(self)
+        self._build_advanced(self.advanced.body)
+
+        self.btn_start = AppButton(
+            self, text="Giải nén ngay", kind="primary", icon="open", icon_size=20, height=48,
+            font=FONT_BUTTON_LG, command=self._on_click_start,
         )
-        self.pwd_entry.pack(side="right", padx=(8, 0))
 
-        self.show_pwd_var = ctk.BooleanVar(value=False)
-        self.show_pwd_chk = ctk.CTkCheckBox(
-            opt_row,
-            text="Hiện",
-            variable=self.show_pwd_var,
-            font=FONT_SMALL,
-            text_color=COLOR_TEXT_PRIMARY,
-            command=self._toggle_show_pwd,
-        ).pack(side="right")
+    def _build_preview_card(self):
+        self.card = ctk.CTkFrame(self.preview_slot, **CARD_STYLE)
+        self.card.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(self.card, text="", image=get_icon("archive", 30, COLOR_TEXT_SECONDARY)).grid(
+            row=0, column=0, rowspan=2, padx=(SP16, SP12), pady=SP12
+        )
+        head = ctk.CTkFrame(self.card, fg_color="transparent")
+        head.grid(row=0, column=1, sticky="w", pady=(SP12, 0))
+        self.name_lbl = ctk.CTkLabel(head, text="", font=FONT_SECTION, text_color=COLOR_TEXT_PRIMARY, anchor="w")
+        self.name_lbl.pack(side="left")
+        self.badges = ctk.CTkFrame(head, fg_color="transparent")
+        self.badges.pack(side="left", padx=SP8)
+        self.meta_lbl = ctk.CTkLabel(self.card, text="", font=FONT_SMALL, text_color=COLOR_TEXT_SECONDARY, anchor="w")
+        self.meta_lbl.grid(row=1, column=1, sticky="w", pady=(0, SP12))
+        self.btn_toggle = AppButton(
+            self.card, text="Xem nội dung", kind="secondary", height=32, command=self._open_contents
+        )
+        self.btn_toggle.grid(row=0, column=2, rowspan=2, padx=SP12)
 
+        self.warn_box = ctk.CTkFrame(self.card, corner_radius=R_SM, fg_color=COLOR_WARNING_SOFT)
+        self.warn_lbl = ctk.CTkLabel(
+            self.warn_box, text="", image=get_icon("warn", 16, COLOR_WARNING), compound="left",
+            font=FONT_SMALL, text_color=COLOR_WARNING, justify="left", anchor="w", wraplength=640,
+        )
+        self.warn_lbl.pack(fill="x", padx=SP12, pady=SP8)
+
+    def _build_password(self, parent):
+        parent.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(
-            opt_row,
-            text="🔐 Mật khẩu:",
-            font=FONT_SMALL,
-            text_color=COLOR_TEXT_PRIMARY,
-        ).pack(side="right", padx=(10, 4))
+            parent, text="Mật khẩu (archive này được mã hóa)", font=FONT_SECTION,
+            text_color=COLOR_TEXT_PRIMARY, anchor="w", height=20,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, SP4))
+        self.pwd_entry = ctk.CTkEntry(parent, placeholder_text="Nhập mật khẩu", show="•", **ENTRY_STYLE)
+        self.pwd_entry.grid(row=1, column=0, sticky="ew", padx=(0, SP8))
+        self.pwd_entry.bind("<KeyRelease>", lambda e: self._validate(), add="+")
+        self.pwd_entry.bind("<Return>", lambda e: self._on_click_start(), add="+")
+        self.btn_eye = IconButton(parent, icon="eye", tooltip="Hiện/ẩn mật khẩu", command=self._toggle_pwd, size=36)
+        self.btn_eye.grid(row=1, column=1)
 
-        # 2. Metadata Bar
-        self.meta_card = ctk.CTkFrame(
-            self,
-            corner_radius=8,
-            fg_color=COLOR_CARD_ALT,
-            border_width=1,
-            border_color=COLOR_BORDER,
-        )
-        self.meta_card.grid(row=1, column=0, sticky="ew", pady=(0, 6), padx=2)
-        self.meta_label = ctk.CTkLabel(
-            self.meta_card,
-            text="Chưa có file ZIP nào được chọn.",
-            font=FONT_SMALL,
-            text_color=COLOR_TEXT_PRIMARY,
-            anchor="w",
-        )
-        self.meta_label.pack(side="left", padx=12, pady=6)
-
-        # 3. Preview Container (Search, Filter, List)
-        preview_frame = ctk.CTkFrame(
-            self,
-            corner_radius=12,
-            border_width=1,
-            border_color=COLOR_BORDER,
-            fg_color=COLOR_CARD,
-        )
-        preview_frame.grid(row=2, column=0, sticky="nsew", pady=(0, 6), padx=2)
-        preview_frame.grid_columnconfigure(0, weight=1)
-        preview_frame.grid_rowconfigure(1, weight=1)
-
-        # Search and Filter Toolbar
-        search_bar = ctk.CTkFrame(preview_frame, fg_color="transparent")
-        search_bar.grid(row=0, column=0, sticky="ew", padx=10, pady=(8, 6))
-        search_bar.grid_columnconfigure(0, weight=1)
-
-        self.search_entry = ctk.CTkEntry(
-            search_bar,
-            placeholder_text="🔎 Tìm kiếm file trong archive...",
-            height=30,
-            text_color=COLOR_TEXT_PRIMARY,
-        )
-        self.search_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        self.search_entry.bind("<KeyRelease>", lambda e: self._on_filter_changed())
-
-        self.filter_seg = ctk.CTkSegmentedButton(
-            search_bar,
-            values=["Tất cả", "Chỉ file", "Chỉ thư mục"],
-            text_color=COLOR_SEGMENT_TEXT,
-            unselected_color=("#E2E8F0", "gray29"),
-            unselected_hover_color=("#CBD5E1", "gray41"),
-            command=lambda v: self._on_filter_changed(),
-        )
-        self.filter_seg.set("Tất cả")
-        self.filter_seg.grid(row=0, column=1)
-
-        # Content List Scrollable
-        self.contents_list = ctk.CTkScrollableFrame(
-            preview_frame,
-            fg_color="transparent",
-        )
-        self.contents_list.grid(row=1, column=0, sticky="nsew", padx=4, pady=(0, 4))
-        self.contents_list.grid_columnconfigure(0, weight=1)
-
-        self._render_empty_preview()
-
-        # 4. Big Extract Button
-        self.btn_extract = ctk.CTkButton(
-            self,
-            text="✨ Giải nén ngay!",
-            height=46,
-            font=("Segoe UI", 15, "bold"),
-            command=self._on_click_extract,
-        )
-        self.btn_extract.grid(row=3, column=0, sticky="ew", pady=(2, 8))
-
-    def _toggle_show_pwd(self):
-        if self.show_pwd_var.get():
-            self.pwd_entry.configure(show="")
-        else:
-            self.pwd_entry.configure(show="•")
-
-    def _render_empty_preview(self):
-        for child in self.contents_list.winfo_children():
-            child.destroy()
-
-        empty_box = ctk.CTkFrame(self.contents_list, fg_color="transparent")
-        empty_box.pack(pady=40)
-
+    def _build_advanced(self, body):
         ctk.CTkLabel(
-            empty_box,
-            text="📂",
-            font=("Segoe UI Emoji", 40),
-        ).pack(pady=(0, 4))
-
-        ctk.CTkLabel(
-            empty_box,
-            text="Chưa có nội dung xem trước",
-            font=FONT_SECTION,
-            text_color=COLOR_TEXT_PRIMARY,
-        ).pack()
-
-        ctk.CTkLabel(
-            empty_box,
-            text="Hãy chọn file ZIP để xem danh sách các mục bên trong",
-            font=FONT_REGULAR,
-            text_color=COLOR_TEXT_SECONDARY,
-        ).pack(pady=(4, 0))
-
-    def load_zip(self, file_path: str):
-        """Nạp file ZIP và hiển thị metadata cùng nội dung xem trước."""
-        p = Path(file_path).resolve()
-        if not p.exists() or not p.is_file():
-            messagebox.showerror("VietZIP", f"File không tồn tại: {file_path}", parent=self.winfo_toplevel())
-            return
-
-        self.current_zip_path = str(p)
-        self.zip_path_entry.delete(0, "end")
-        self.zip_path_entry.insert(0, str(p))
-
-        # Lưu vào danh sách gần đây
-        recent_service.add(str(p))
-
-        # Tự động gợi ý thư mục giải nén
-        self._update_suggested_dest_dir(p)
-
+            body, text="Khi file đã tồn tại", font=FONT_SECTION, text_color=COLOR_TEXT_PRIMARY, anchor="w"
+        ).grid(row=0, column=0, sticky="w", pady=(0, SP4))
         try:
-            self.archive_metadata = get_archive_metadata(p)
-            self.all_entries = list_archive_entries(p)
-        except Exception as exc:
-            messagebox.showerror("VietZIP", f"Không thể đọc file ZIP:\n{exc}", parent=self.winfo_toplevel())
-            self.meta_label.configure(text=f"⚠️ Lỗi đọc file ZIP: {exc}")
-            return
-
-        # Cập nhật metadata bar
-        enc_badge = " • 🔐 Có mật khẩu" if self.archive_metadata.is_encrypted else ""
-        self.meta_label.configure(
-            text=(
-                f"📦 {p.name} • {human_size(self.archive_metadata.file_size)} "
-                f"({self.archive_metadata.total_entries} mục, uncompressed: "
-                f"{human_size(self.archive_metadata.uncompressed_size)}, "
-                f"tỷ lệ: {self.archive_metadata.ratio_percent:.1f}%){enc_badge}"
-            )
+            default = OverwritePolicy(settings_service.get("overwrite_policy", "auto_rename"))
+        except ValueError:
+            default = OverwritePolicy.AUTO_RENAME
+        self.policy_var = ctk.StringVar(value=default.value)
+        for i, (label, pol) in enumerate(POLICY_CHOICES):
+            ctk.CTkRadioButton(
+                body, text=label, variable=self.policy_var, value=pol.value,
+                command=self._on_policy_changed, **RADIO_STYLE,
+            ).grid(row=1 + i, column=0, sticky="w", pady=SP4)
+        self.policy_warn = ctk.CTkLabel(
+            body, text=" Các file trùng tên sẽ bị ghi đè và không thể khôi phục.",
+            image=get_icon("warn", 14, COLOR_DANGER), compound="left", font=FONT_SMALL,
+            text_color=COLOR_DANGER, anchor="w",
         )
+        self.policy_warn.grid(row=4, column=0, sticky="w", pady=(SP4, 0))
+        self._on_policy_changed()
 
-        # Cảnh báo Zip bomb nếu có
-        if self.archive_metadata.has_zip_bomb_risk:
-            messagebox.showwarning(
-                "Cảnh báo Archive",
-                self.archive_metadata.zip_bomb_warning
-                or "Archive có tỷ lệ nén bất thường, hãy cẩn thận khi giải nén!",
-                parent=self.winfo_toplevel(),
-            )
-
-        self._on_filter_changed()
-
-    def _update_suggested_dest_dir(self, zip_path: Path):
-        parent_dir = zip_path.parent
-        if self.create_subfolder_var.get():
-            target = parent_dir / zip_path.stem
-        else:
-            target = parent_dir
-        self.dest_dir_entry.delete(0, "end")
-        self.dest_dir_entry.insert(0, str(target))
-
-    def _on_subfolder_toggle(self):
-        if self.current_zip_path:
-            self._update_suggested_dest_dir(Path(self.current_zip_path))
-
-    def _choose_zip_file(self):
+    # ------------------------------------------------------------------ Chọn file
+    def pick_zip(self):
+        if self._busy:
+            return
         path = filedialog.askopenfilename(
             title="Chọn file ZIP cần giải nén",
-            filetypes=[("ZIP Archive", "*.zip"), ("All Files", "*.*")],
+            filetypes=[("ZIP Archive", "*.zip"), ("Tất cả file", "*.*")],
             parent=self.winfo_toplevel(),
         )
         if path:
             self.load_zip(path)
 
-    def _choose_dest_dir(self):
-        dir_path = filedialog.askdirectory(title="Chọn thư mục giải nén", parent=self.winfo_toplevel())
-        if dir_path:
-            self.dest_dir_entry.delete(0, "end")
-            self.dest_dir_entry.insert(0, dir_path)
-
-    def _on_filter_changed(self):
-        """Lọc danh sách file theo từ khóa tìm kiếm và loại mục."""
-        if not self.all_entries:
-            self._render_empty_preview()
-            return
-
-        query = self.search_entry.get().strip().lower()
-        filter_mode = self.filter_seg.get()
-
-        matched: list[ArchiveEntry] = []
-        for entry in self.all_entries:
-            if filter_mode == "Chỉ file" and entry.is_dir:
-                continue
-            if filter_mode == "Chỉ thư mục" and not entry.is_dir:
-                continue
-            if query and query not in entry.filename.lower():
-                continue
-            matched.append(entry)
-
-        self.filtered_entries = matched
-        self._render_entries()
-
-    def _render_entries(self):
-        for child in self.contents_list.winfo_children():
-            child.destroy()
-
-        if not self.filtered_entries:
-            ctk.CTkLabel(
-                self.contents_list,
-                text="Không tìm thấy mục nào phù hợp.",
-                font=FONT_SMALL,
-                text_color=COLOR_TEXT_SECONDARY,
-            ).pack(pady=20)
-            return
-
-        # Hiển thị tối đa _display_limit mục để giữ UI luôn mượt mà
-        limit = min(len(self.filtered_entries), self._display_limit)
-        for i in range(limit):
-            entry = self.filtered_entries[i]
-            icon = "📁" if entry.is_dir else "📄"
-
-            row = ctk.CTkFrame(
-                self.contents_list,
-                corner_radius=6,
-                fg_color=("gray95", "gray18") if i % 2 == 0 else "transparent",
-            )
-            row.pack(fill="x", pady=1, padx=2)
-            row.grid_columnconfigure(1, weight=1)
-
-            ctk.CTkLabel(row, text=icon, font=("Segoe UI Emoji", 14)).grid(
-                row=0, column=0, padx=(8, 4), pady=3
-            )
-
-            ctk.CTkLabel(
-                row,
-                text=entry.filename,
-                font=FONT_SMALL,
-                text_color=COLOR_TEXT_PRIMARY,
-                anchor="w",
-            ).grid(row=0, column=1, sticky="w", padx=4)
-
-            size_text = "" if entry.is_dir else human_size(entry.file_size)
-            ctk.CTkLabel(
-                row,
-                text=size_text,
-                font=FONT_MONO,
-                text_color=COLOR_TEXT_SECONDARY,
-            ).grid(row=0, column=2, padx=8)
-
-        if len(self.filtered_entries) > self._display_limit:
-            remaining = len(self.filtered_entries) - self._display_limit
-            more_btn = ctk.CTkButton(
-                self.contents_list,
-                text=f"+ Xem thêm {remaining} mục khác...",
-                **BTN_SECONDARY_STYLE,
-                command=self._load_more_entries,
-            )
-            more_btn.pack(pady=6)
-
-    def _load_more_entries(self):
-        self._display_limit += 300
-        self._render_entries()
-
-    def _on_click_extract(self):
-        zip_path = self.zip_path_entry.get().strip()
-        dest_dir = self.dest_dir_entry.get().strip()
-
-        if not zip_path or not Path(zip_path).exists():
-            messagebox.showwarning("VietZIP", "Vui lòng chọn file ZIP hợp lệ!", parent=self.winfo_toplevel())
-            return
-        if not dest_dir:
-            messagebox.showwarning("VietZIP", "Vui lòng chọn nơi để giải nén!", parent=self.winfo_toplevel())
-            return
-
-        password = self.pwd_entry.get().strip() or None
-        self.on_start_extract(zip_path, dest_dir, password)
-
-    def set_busy(self, is_busy: bool):
-        self._is_busy = is_busy
-        state = "disabled" if is_busy else "normal"
-        self.btn_extract.configure(
-            state=state,
-            text="⏳ Đang giải nén..." if is_busy else "✨ Giải nén ngay!",
+    def _browse_dest(self):
+        init = self._dest_user_base or self._dest_base()
+        while init and not Path(init).exists() and Path(init) != Path(init).parent:
+            init = str(Path(init).parent)
+        path = filedialog.askdirectory(
+            title="Chọn thư mục giải nén", initialdir=init or None, parent=self.winfo_toplevel()
         )
+        if path:
+            self._dest_user_base = os.path.normpath(path)  # thư mục gốc người dùng chọn
+            self._dest_dirty = False
+            settings_service.set("last_extract_dir", self._dest_user_base)
+            self._suggest_dest()
+            self._validate()
+
+    # ------------------------------------------------------------------ Nạp ZIP (luồng nền)
+    def load_zip(self, file_path: str):
+        p = Path(file_path).resolve()
+        if not p.is_file():
+            self._show_error("File không tồn tại", "Có thể file đã bị di chuyển hoặc xóa.")
+            return
+        self.zip_path = str(p)
+        self.meta, self.entries = None, []
+        self._loading = True
+        self._load_token += 1
+        token = self._load_token
+        self._dest_dirty = False
+        self._show_card_loading(p)
+        self._refresh_layout()
+        self._suggest_dest()
+        self._validate()
+
+        def worker():
+            try:
+                cap = float(settings_service.get("large_archive_threshold_gb", 10.0) or 10.0)
+                meta = get_archive_metadata(p, max_bomb_uncompressed_bytes=int(cap * 1024**3))
+                entries = list_archive_entries(p)
+                self._load_q.put((token, meta, entries, None))
+            except Exception as exc:  # noqa: BLE001 — hiển thị thân thiện, log đã ghi ở core
+                self._load_q.put((token, None, None, exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(80, self._poll_load)
+
+    def _poll_load(self):
+        try:
+            token, meta, entries, exc = self._load_q.get_nowait()
+        except queue.Empty:
+            if self._loading:
+                self.after(80, self._poll_load)
+            return
+        if token != self._load_token:  # kết quả cũ (người dùng đã chọn file khác)
+            self.after(80, self._poll_load)
+            return
+        self._loading = False
+        if exc is not None:
+            self.zip_path = None
+            self._show_error("Không đọc được file ZIP", friendly_error(str(exc), type(exc).__name__))
+            self._refresh_layout()
+            self._validate()
+            return
+        self.meta, self.entries = meta, entries
+        recent_service.add(self.zip_path)
+        self._fill_card()
+        self._refresh_layout()
+        self._validate()
+        if meta.is_encrypted:
+            self.pwd_entry.focus_set()
+
+    # ------------------------------------------------------------------ Thẻ xem trước
+    def _clear_slot(self):
+        for w in self.preview_slot.winfo_children():
+            if w is not self.card:
+                w.destroy()
+        self.card.grid_forget()
+
+    def _show_card_loading(self, p: Path):
+        self._clear_slot()
+        self.card.grid(row=0, column=0, sticky="ew")
+        self.name_lbl.configure(text=shorten_middle(p.name, 48))
+        self.meta_lbl.configure(text="Đang đọc archive...")
+        for w in self.badges.winfo_children():
+            w.destroy()
+        self.warn_box.grid_forget()
+        self.btn_toggle.configure(state="disabled")
+
+    def _fill_card(self):
+        m = self.meta
+        self.btn_toggle.configure(state="normal")
+        self.meta_lbl.configure(
+            text=(
+                f"{human_size(m.file_size)} • {format_count(m.total_files)} file • "
+                f"{format_count(m.total_dirs)} thư mục • Nén {m.ratio_percent:.0f}%"
+            )
+        )
+        for w in self.badges.winfo_children():
+            w.destroy()
+        if m.is_encrypted:
+            StatusBadge(self.badges, "info", "Có mật khẩu", icon="lock").pack(side="left")
+
+        msgs = []
+        if settings_service.get("warn_large_archive", True):
+            if m.has_zip_bomb_risk:
+                msgs.append(m.zip_bomb_warning or "Tỷ lệ nén bất thường — hãy cẩn thận khi giải nén.")
+            thr = float(settings_service.get("large_archive_threshold_gb", 10.0) or 10.0)
+            if m.uncompressed_size > thr * 1024**3:
+                msgs.append(
+                    f"Dung lượng sau giải nén khoảng {human_size(m.uncompressed_size)}, lớn hơn ngưỡng cảnh báo {thr:g} GB."
+                )
+        if msgs:
+            self.warn_lbl.configure(text=" " + "\n ".join(msgs))
+            self.warn_box.grid(row=2, column=0, columnspan=3, sticky="ew", padx=SP12, pady=(0, SP12))
+        else:
+            self.warn_box.grid_forget()
+
+    def _show_error(self, title: str, desc: str):
+        self._clear_slot()
+        EmptyState(
+            self.preview_slot, title=title, description=desc, icon="warn",
+            action_text="Chọn file ZIP khác", action=self.pick_zip,
+        ).grid(row=0, column=0, sticky="ew")
+
+    def _open_contents(self):
+        """Mở cửa sổ riêng (co giãn được) thay vì ép danh sách vào màn hình chính."""
+        if not self.entries:
+            return
+        if self._contents_win is not None and self._contents_win.winfo_exists():
+            bring_to_front(self._contents_win, self.winfo_toplevel())
+            return
+        self._contents_win = ArchiveContentsWindow(
+            self.winfo_toplevel(), Path(self.zip_path).name, self.entries
+        )
+
+    # ------------------------------------------------------------------ Bố cục theo trạng thái
+    def _refresh_layout(self):
+        loaded = self.zip_path is not None or self._has_error_slot()
+        ready = self.zip_path is not None and not self._loading and self.meta is not None
+        self.drop.set_compact(loaded)
+
+        for w in (self.drop, self.preview_slot, self.pwd_row,
+                  self.dest_holder, self.advanced, self.btn_start):
+            w.pack_forget()
+
+        # Phần đáy được pack trước => không bao giờ bị cắt khi cửa sổ nhỏ
+        if self.zip_path:
+            self.btn_start.pack(side="bottom", fill="x", pady=(SP12, 0))
+            self.advanced.pack(side="bottom", fill="x", pady=(SP12, 0))
+            self.dest_holder.pack(side="bottom", fill="x", pady=(SP12, 0))
+            if ready and self.meta.is_encrypted:
+                self.pwd_row.pack(side="bottom", fill="x", pady=(SP12, 0))
+
+        if loaded:
+            self.drop.pack(side="top", fill="x")
+            self.preview_slot.pack(side="top", fill="x", pady=(SP12, 0))
+        else:
+            self.drop.pack(side="top", fill="both", expand=True)
+
+    def _has_error_slot(self) -> bool:
+        return any(w is not self.card for w in self.preview_slot.winfo_children())
+
+    # ------------------------------------------------------------------ Đích giải nén
+    def _dest_base(self) -> str:
+        last = settings_service.get("last_extract_dir") or ""
+        if last and Path(last).is_dir():
+            return last
+        return str(Path(self.zip_path).parent) if self.zip_path else str(Path.home())
+
+    def _suggest_dest(self):
+        if not self.zip_path or self._dest_dirty:
+            return
+        base = self._dest_user_base or self._dest_base()
+        self.dest.set(os.path.normpath(suggest_extract_dir(self.zip_path, self.subfolder_var.get(), base)))
+
+    def _on_dest_edited(self):
+        self._dest_dirty = True
+        self._validate()
+
+    def _on_subfolder_toggle(self):
+        if not self.zip_path:
+            return
+        stem = Path(self.zip_path).stem
+        cur = Path(self.dest.get()) if self.dest.get() else None
+        if self._dest_dirty and cur is not None:
+            base = cur.parent if cur.name == stem else cur
+            self.dest.set(str(base / stem if self.subfolder_var.get() else base))
+        else:
+            self._suggest_dest()
+        self._validate()
+
+    # ------------------------------------------------------------------ Mật khẩu / tùy chọn
+    def _toggle_pwd(self):
+        self._eye_visible = not self._eye_visible
+        self.pwd_entry.configure(show="" if self._eye_visible else "•")
+        self.btn_eye.set_icon("eye_off" if self._eye_visible else "eye")
+
+    def _on_policy_changed(self):
+        pol = OverwritePolicy(self.policy_var.get())
+        if pol == OverwritePolicy.OVERWRITE:
+            self.policy_warn.grid()
+        else:
+            self.policy_warn.grid_remove()
+        self.advanced.set_summary(f"Khi trùng tên: {POLICY_SHORT[pol]}")
+
+    # ------------------------------------------------------------------ Kiểm tra hợp lệ
+    def _validate(self) -> bool:
+        ok = self.zip_path is not None and self.meta is not None and not self._loading and not self._busy
+        if self.zip_path:
+            err, warn = validate_dest_dir(self.dest.get())
+            if err:
+                self.dest.set_message(err, "error")
+                ok = False
+            elif warn and self._dest_dirty:  # đề xuất tự động thì im lặng, chỉ báo khi người dùng tự gõ
+                self.dest.set_message(warn, "warning")
+            else:
+                self.dest.clear_message()
+        if self.meta is not None and self.meta.is_encrypted:
+            if not self.pwd_entry.get():
+                ok = False  # cần mật khẩu; placeholder của ô nhập đã nói rõ
+        self.btn_start.configure(state="normal" if ok else "disabled")
+        return ok
+
+    # ------------------------------------------------------------------ Bắt đầu
+    def start(self):
+        self._on_click_start()
+
+    def _on_click_start(self):
+        if self._busy or not self._validate():
+            return
+        m = self.meta
+        if m is not None and m.has_zip_bomb_risk and settings_service.get("warn_large_archive", True):
+            if not messagebox.askyesno(
+                "Archive có dấu hiệu bất thường",
+                (m.zip_bomb_warning or "Tỷ lệ nén bất thường.") + "\n\nBạn vẫn muốn giải nén?",
+                icon="warning",
+                parent=self.winfo_toplevel(),
+            ):
+                return
+        password = self.pwd_entry.get() or None
+        self.on_start(self.zip_path, self.dest.get(), password, OverwritePolicy(self.policy_var.get()))
+
+    def reset(self):
+        """Sau khi hoàn tất và chọn 'Giải nén tiếp'."""
+        self.zip_path, self.meta, self.entries = None, None, []
+        self._dest_dirty = False
+        self.pwd_entry.delete(0, "end")
+        self._clear_slot()
+        self._refresh_layout()
+        self._validate()
+
+    def set_busy(self, busy: bool):
+        self._busy = busy
+        self.drop.set_state("processing" if busy else "normal")
+        self.btn_start.configure(state="disabled" if busy else "normal")
+        if not busy:
+            self._validate()

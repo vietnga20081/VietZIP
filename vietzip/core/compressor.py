@@ -103,23 +103,17 @@ def compress_archive(
                 continue
 
             # File thông thường: đọc và ghi theo từng chunk để cập nhật mượt & phản hồi cancel
+            cancelled_mid_file = False
             try:
                 with open(full_path, "rb") as src_fp, zf.open(
                     arcname_str, "w", force_zip64=True
                 ) as dst_fp:
                     while True:
                         if cancel_event and cancel_event.is_set():
-                            logger.info("Tác vụ nén đã bị hủy giữa chừng.")
-                            zf.close()
-                            zf = None
-                            if temp_path.exists():
-                                temp_path.unlink(missing_ok=True)
-                            return OperationResult(
-                                success=False,
-                                operation="compress",
-                                elapsed_seconds=time.time() - start_time,
-                                cancelled=True,
-                            )
+                            # Chỉ đánh dấu rồi thoát khỏi `with` để handle ghi được đóng trước;
+                            # gọi zf.close() ngay tại đây sẽ ném ValueError và biến "hủy" thành "lỗi".
+                            cancelled_mid_file = True
+                            break
 
                         chunk = src_fp.read(chunk_size)
                         if not chunk:
@@ -135,14 +129,33 @@ def compress_archive(
                 warnings.append(msg)
                 continue
 
-        # Kiểm tra tính toàn vẹn (Verify archive CRC) nếu được yêu cầu
-        if verify and zf is not None:
-            first_bad = zf.testzip()
-            if first_bad is not None:
-                raise zipfile.BadZipFile(f"Kiểm tra CRC thất bại tại file: {first_bad}")
+            if cancelled_mid_file:
+                logger.info("Tác vụ nén đã bị hủy giữa chừng.")
+                zf.close()
+                zf = None
+                if temp_path.exists():
+                    temp_path.unlink(missing_ok=True)
+                return OperationResult(
+                    success=False,
+                    operation="compress",
+                    elapsed_seconds=time.time() - start_time,
+                    cancelled=True,
+                )
 
+        # Đóng file trước rồi mới xác minh bằng cách MỞ LẠI ở chế độ đọc.
+        # (Gọi testzip() khi archive còn mở ở chế độ ghi cho kết quả sai với AES + tên file
+        # Unicode, khiến người dùng không thể nén file tiếng Việt có mật khẩu khi bật Verify.)
         zf.close()
         zf = None
+
+        if verify:
+            reader_cls = pyzipper.AESZipFile if HAS_PYZIPPER else zipfile.ZipFile
+            with reader_cls(temp_path, "r") as verifier:
+                if password:
+                    verifier.setpassword(password.encode("utf-8"))
+                first_bad = verifier.testzip()
+            if first_bad is not None:
+                raise zipfile.BadZipFile(f"Kiểm tra CRC thất bại tại file: {first_bad}")
 
         # Hoàn tất thành công: đổi tên file tạm sang output chính thức
         if out_path.exists():

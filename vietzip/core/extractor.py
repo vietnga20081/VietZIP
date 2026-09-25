@@ -130,19 +130,15 @@ def extract_archive(
                     # Nếu OVERWRITE thì tiếp tục ghi đè
 
                 # Đọc và ghi từng chunk để cập nhật mượt và bắt cancel
+                cancelled_mid_file = False
                 try:
                     with zf.open(member, "r") as src_stream, open(
                         target_file, "wb"
                     ) as dst_stream:
                         while True:
                             if cancel_event and cancel_event.is_set():
-                                logger.info("Tác vụ giải nén đã bị hủy giữa chừng.")
-                                return OperationResult(
-                                    success=False,
-                                    operation="extract",
-                                    elapsed_seconds=time.time() - start_time,
-                                    cancelled=True,
-                                )
+                                cancelled_mid_file = True  # thoát `with` để đóng file rồi mới xóa file dở
+                                break
 
                             chunk = src_stream.read(chunk_size)
                             if not chunk:
@@ -151,6 +147,16 @@ def extract_archive(
                             info = tracker.update(len(chunk), member.filename, index)
                             if progress_callback:
                                 progress_callback(info)
+
+                    if cancelled_mid_file:
+                        logger.info("Tác vụ giải nén đã bị hủy giữa chừng.")
+                        target_file.unlink(missing_ok=True)  # không để lại file ghi dở
+                        return OperationResult(
+                            success=False,
+                            operation="extract",
+                            elapsed_seconds=time.time() - start_time,
+                            cancelled=True,
+                        )
 
                     # Phục hồi timestamp nếu có
                     if member.date_time:

@@ -34,7 +34,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "overwrite_policy": "auto_rename",         # "auto_rename" | "overwrite" | "skip"
     "default_output_dir": "",                  # Thư mục lưu mặc định
     "history_enabled": True,                   # Bật ghi lịch sử
-    "show_mascot": True,                       # Hiển thị mascot
+    "show_mascot": True,                       # Hiển thị logo VietZIP ở màn hình trống
+    "create_subfolder": True,                  # Giải nén vào thư mục con theo tên ZIP
+    "filename_behavior": "smart",              # "smart" (theo tên nguồn) | "timestamp" (VietZIP_ngày_giờ)
+    "last_output_dir": "",                     # Thư mục ZIP đầu ra người dùng chọn gần nhất
+    "last_extract_dir": "",                    # Thư mục giải nén người dùng chọn gần nhất
 }
 
 
