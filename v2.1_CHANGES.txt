@@ -1,0 +1,51 @@
+76aaf9e v2.1: Chọn nhiều dòng, giải nén chọn lọc, xem trước nhanh
+0ea69fa Rebuild UI/UX theo VietZIP_UI_UX_REBUILD_CHECKLIST.md
+b13ac22 feat: sua loi an cua so chuc nang, cap nhat donate va them huong dan build
+commit 76aaf9eb6fe1dd5c8bd39bf971e0d27103c4b0e4
+Author: VietZIP UI Rebuild <ai@vietzip.local>
+Date:   Fri Sep 25 07:33:19 2026 +0000
+
+    v2.1: Chọn nhiều dòng, giải nén chọn lọc, xem trước nhanh
+    
+    ## Core
+    - extractor.py: thêm tham số members cho extract_archive() để chỉ giải nén các
+      entry được chỉ định (thư mục cha vẫn tự tạo). Thêm hàm extract_selected()
+      làm lớp bọc dễ đọc tại nơi gọi.
+    - 2 test hồi quy mới: extract_selected trích đúng mục chọn, báo lỗi rõ ràng
+      khi danh sách chọn không khớp entry nào trong archive.
+    
+    ## UI — Nén (FileList đa chọn)
+    - Click chọn 1 dòng, Ctrl+click thêm/bớt, Shift+click chọn cả vùng (giống
+      Windows Explorer). Dòng được chọn tô nền xanh nhạt.
+    - Nút 'Xóa N mục đã chọn' xuất hiện cạnh 'Xóa tất cả' khi có lựa chọn.
+    - Click khoảng trống bên dưới danh sách để bỏ chọn tất cả.
+    - CompressView.remove_items() để xóa hàng loạt theo danh sách path.
+    
+    ## UI — Giải nén (ArchiveContentsWindow)
+    - Checkbox mỗi dòng + 'Chọn tất cả' (theo phạm vi đang lọc/tìm kiếm, lựa
+      chọn ngoài phạm vi lọc vẫn được giữ nguyên).
+    - Chọn 1 thư mục tự động mở rộng sang toàn bộ file/thư mục con bên trong khi
+      giải nén (_resolve_members).
+    - Nút 'Giải nén N mục đã chọn' tái dùng đúng đích/mật khẩu/chính sách trùng
+      tên đã cấu hình ở ExtractView — không phải nhập lại.
+    - Xem trước nhanh: double-click vào file .txt/.md/.json/.py/... hoặc
+      .png/.jpg/... (giới hạn 5MB) để xem ngay trong cửa sổ phụ, hỗ trợ archive
+      có mật khẩu, báo lỗi thân thiện khi sai mật khẩu/dữ liệu hỏng.
+    
+    ## Đã kiểm thử qua Xvfb với sự kiện chuột thật
+    Xác nhận bằng winfo_containing() + chuỗi <Enter>/<ButtonPress-1>/<ButtonRelease-1>
+    (đúng cơ chế nội bộ của CustomTkinter — CTkButton chỉ kích hoạt command khi
+    _mouse_inside=True, tức đã nhận <Enter> trước đó) rằng: click/Ctrl/Shift chọn
+    đúng, nút xóa hàng loạt không ảnh hưởng nút xóa từng dòng và ngược lại, chọn
+    tất cả tôn trọng bộ lọc hiện tại, giải nén chọn lọc ra đúng file kể cả khi có
+    mật khẩu, xem trước đọc đúng nội dung/hình ảnh trong ZIP có mã hoá. Test cả
+    Light/Dark mode. 27 test tự động pass (25 cũ + 2 mới), không phá vỡ API core.
+
+ tests/test_extractor.py             |  38 +++++-
+ vietzip/core/extractor.py           |  47 ++++++-
+ vietzip/ui/archive_contents_view.py | 255 ++++++++++++++++++++++++++++++++----
+ vietzip/ui/components/file_list.py  | 122 +++++++++++++++--
+ vietzip/ui/compress_view.py         |  16 ++-
+ vietzip/ui/extract_view.py          |  20 ++-
+ vietzip/ui/main_window.py           |  12 +-
+ 7 files changed, 465 insertions(+), 45 deletions(-)

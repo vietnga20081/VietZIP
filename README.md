@@ -96,6 +96,16 @@ VietZIP/
 ```
 
 ---
+cd /d G:\VietPR\VietZIP
+
+git status
+
+git add .
+git commit -m "Update VietZIP v2.1.0"
+git push origin main
+
+git tag -a v2.1.0 -m "VietZIP v2.1.0"
+git push origin v2.1.0
 
 ## 🚀 Cài đặt & Khởi chạy
 

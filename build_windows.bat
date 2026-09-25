@@ -1,60 +1,80 @@
 @echo off
-chcp 65001 > nul
+setlocal EnableExtensions
+
+title VietZIP - Windows Build
+
 echo ========================================================
-echo        VietZIP - Script đóng gói Windows (PyInstaller)
+echo          VietZIP - Windows Build Script
 echo ========================================================
 echo.
 
-echo [1/4] Đang kiểm tra môi trường và cài đặt dependencies...
+echo [1/4] Checking environment and installing dependencies...
 python -m pip install --upgrade -r requirements.txt pyinstaller
+
 if errorlevel 1 (
-    echo [LỖI] Không thể cài đặt các thư viện cần thiết.
+    echo [ERROR] Failed to install required dependencies.
     pause
     exit /b 1
 )
 
 echo.
-echo [2/4] Đang chạy kiểm thử tự động (pytest)...
+echo [2/4] Running automated tests...
 python -m pytest tests/
+
 if errorlevel 1 (
-    echo [CẢNH BÁO] Kiểm thử không đạt, dừng đóng gói.
+    echo [ERROR] Tests failed. Build cancelled.
     pause
     exit /b 1
 )
 
 echo.
-echo [3/4] Đang đóng gói ứng dụng chính VietZIP...
+echo [3/4] Building VietZIP application...
 python -m PyInstaller VietZIP.spec --noconfirm --clean
+
 if errorlevel 1 (
-    echo [LỖI] Đóng gói ứng dụng chính thất bại.
+    echo [ERROR] VietZIP application build failed.
     pause
     exit /b 1
 )
 
 echo.
-echo [4/4] Đang đóng gói bộ cài đặt Setup Wizard (VietZIP_Setup.exe)...
+echo [4/4] Building VietZIP Setup Wizard...
 python -c "import shutil; shutil.make_archive('payload', 'zip', 'dist/VietZIP')"
+
 python -m PyInstaller VietZIP_Setup.spec --noconfirm
+
 if errorlevel 1 (
-    echo [CẢNH BÁO] Không thể tạo file Setup EXE.
+    echo [WARNING] Setup Wizard build failed.
 )
 
-:: Xóa file zip tạm
-if exist payload.zip del /f /q payload.zip >nul 2>&1
+if exist payload.zip (
+    del /f /q payload.zip >nul 2>&1
+)
 
-:: Kiểm tra Inno Setup nếu có
 where iscc.exe >nul 2>&1
-if %errorlevel% equ 0 (
+
+if not errorlevel 1 (
     echo.
-    echo [BỔ SUNG] Phát hiện Inno Setup Compiler, đang biên dịch installer.iss...
+    echo [EXTRA] Inno Setup detected.
+    echo Building installer.iss...
     iscc.exe installer.iss
+
+    if errorlevel 1 (
+        echo [WARNING] Inno Setup compilation failed.
+    )
 )
 
 echo.
 echo ========================================================
-echo [HOÀN TẤT] Các bản dựng đã được tạo thành công:
-echo   1. Ứng dụng độc lập: dist\VietZIP\VietZIP.exe
-echo   2. Bộ cài đặt Wizard: dist\VietZIP_Setup.exe
+echo [DONE] Build completed.
+echo.
+echo   1. Portable application:
+echo      dist\VietZIP\VietZIP.exe
+echo.
+echo   2. Setup Wizard:
+echo      dist\VietZIP_Setup.exe
 echo ========================================================
 echo.
+
 pause
+endlocal
